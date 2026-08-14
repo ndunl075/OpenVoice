@@ -12,26 +12,32 @@ the checklist below; boxes are checked as each piece lands on `main`.
 
 - [x] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
       on release, clipboard-paste injection.
-- [ ] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
+- [x] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
 - [ ] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
 
-## Running v0
+## Running
 
 ```sh
-# 1. Fetch a model (see crates/asr/README.md)
+# 1. Fetch models (see crates/asr/README.md and crates/vad/README.md)
 mkdir -p models
 curl -L -o models/ggml-small.en-q5_1.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+curl -L -o models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
 
 # 2. Run the daemon
 cargo run -p daemon --release
 ```
 
 Hold Right Ctrl to dictate, release to insert the transcribed text at the
-cursor. The model path defaults to `models/ggml-small.en-q5_1.bin`; override
-it with a CLI arg (`cargo run -p daemon --release -- path/to/model.bin`) or
-the `DICTATION_MODEL_PATH` env var.
+cursor. As of v1, transcription streams continuously while the key is held
+(rolling 3s windows, §2.3) instead of waiting for release -- only the
+trailing partial window is left to decode at that point. The ASR model path
+defaults to `models/ggml-small.en-q5_1.bin`; override it with a CLI arg
+(`cargo run -p daemon --release -- path/to/model.bin`) or the
+`DICTATION_MODEL_PATH` env var. The VAD model path defaults to
+`models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`.
 
 **Recording indicator, honestly scoped:** v0 prints recording state to the
 console (it's the only UI that exists yet) -- there's no persistent

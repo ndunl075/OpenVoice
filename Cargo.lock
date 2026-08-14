@@ -413,6 +413,7 @@ dependencies = [
  "hotkey",
  "inject",
  "ring-buffer",
+ "vad",
 ]
 
 [[package]]

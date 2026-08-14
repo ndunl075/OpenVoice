@@ -10,8 +10,10 @@
 //! module for why debouncing matters at all.
 
 mod endpoint;
+mod framing;
 
 pub use endpoint::{EndpointConfig, EndpointEvent, Endpointer};
+pub use framing::next_frame_range;
 
 use std::path::Path;
 

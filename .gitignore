@@ -8,6 +8,9 @@
 *.onnx
 *.bin
 
+# User's own dictionary; dictionary.example.txt is the tracked template.
+/dictionary.txt
+
 .DS_Store
 Thumbs.db
 .vscode/

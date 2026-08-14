@@ -1,0 +1,9 @@
+# User dictionary (§2.3 "custom vocab") -- one term per line.
+# Copy this file to dictionary.txt (or point DICTATION_DICTIONARY_PATH at
+# your own copy) and list names, jargon, and product names you want ASR
+# decoding biased toward. Blank lines and lines starting with '#' are
+# ignored.
+Wispr Flow
+Silero
+Qwen2.5
+whisper.cpp

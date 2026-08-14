@@ -1,13 +1,18 @@
-//! Global push-to-talk hotkey capture.
+//! Global hotkey capture for both interaction modes.
 //!
-//! See `dictation-architecture.md` §2.2. Push-to-talk is the v0/v1
-//! interaction mode: hold the hotkey to record, release to commit. (Hands-
-//! free -- VAD silence commits instead of a key release -- is a v2 addition
-//! layered on top of the same event stream.)
+//! See `dictation-architecture.md` §2.2. Push-to-talk ([`listen_push_to_talk`]):
+//! hold the hotkey to record, release to commit -- the v0/v1 mode. Hands-
+//! free adds a second, independent toggle key on top of the same
+//! edge-detection machinery ([`listen_multi`]): tap it to start listening,
+//! and instead of a key release, VAD silence commits each utterance (see
+//! `crates/daemon` for where that decision actually gets made -- this
+//! crate only reports key transitions, not audio state).
 
 mod edge;
+mod multi;
 
 pub use edge::EdgeDetector;
+pub use multi::{listen_multi, route, HotkeySlot, MultiHotkeyConfig};
 pub use rdev::Key as HotkeyKey;
 
 use rdev::{listen, Event};

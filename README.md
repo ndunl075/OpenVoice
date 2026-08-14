@@ -13,7 +13,7 @@ the checklist below; boxes are checked as each piece lands on `main`.
 - [x] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
       on release, clipboard-paste injection.
 - [x] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
-- [ ] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
+- [x] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
 
 ## Running
@@ -33,7 +33,8 @@ cargo run -p daemon --release
 ```
 
 Hold Right Ctrl to dictate, release to insert the transcribed text at the
-cursor. As of v1, transcription streams continuously while the key is held
+cursor -- or tap AltGr to switch to hands-free mode (see below). As of v1,
+transcription streams continuously while the key is held
 (rolling 3s windows, §2.3) instead of waiting for release -- only the
 trailing partial window is left to decode at that point. The ASR model path
 defaults to `models/ggml-small.en-q5_1.bin`; override it with a CLI arg
@@ -56,6 +57,15 @@ from just before the hotkey went down, pulled straight from the always-on
 ring buffer. Solves "I started talking a beat too early and lost my first
 word" -- something a cloud tool structurally can't do, since it isn't
 listening until you've already pressed the key.
+
+**Hands-free mode (§2.2, §4 v2):** tap AltGr (physically Right Alt on most
+layouts) to toggle hands-free listening on. Instead of holding a key,
+Silero VAD's confirmed end-of-speech commits each utterance -- and the
+daemon immediately starts listening for the next one, so a whole
+dictation session can run without touching the keyboard between
+utterances. Tap AltGr again to stop. Push-to-talk (Right Ctrl) and
+hands-free are mutually exclusive: whichever session is active, the other
+mode's key is ignored until it ends.
 
 **Recording indicator, honestly scoped:** v0 prints recording state to the
 console (it's the only UI that exists yet) -- there's no persistent

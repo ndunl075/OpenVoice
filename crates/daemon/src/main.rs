@@ -18,21 +18,28 @@
 //! Every session also includes ~500ms of pre-roll (§2.1) -- audio from
 //! just before the hotkey went down, pulled from the always-on ring
 //! buffer -- so starting to talk a beat before pressing the key doesn't
-//! lose the first word.
+//! lose the first word. And per §2.2/§4, both interaction modes are
+//! supported: push-to-talk (hold to record, release commits) and
+//! hands-free (tap a separate toggle key to start listening; VAD silence
+//! commits each utterance and immediately starts listening for the next
+//! one, until the toggle key is tapped again to stop).
 
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use hotkey::{HotkeyConfig, HotkeyEvent};
+use hotkey::{HotkeyEvent, HotkeySlot, MultiHotkeyConfig};
 use ring_buffer::Mark;
 
 /// Events the blocking hotkey-listener thread hands off to the pipeline
 /// worker, which does the actual (slower) recording/transcribe/inject
 /// work off the OS keyboard-hook thread.
 enum PipelineEvent {
-    Pressed,
-    Released,
+    PushToTalkPressed,
+    PushToTalkReleased,
+    /// Only the press edge of the hands-free toggle key matters -- it's a
+    /// toggle, not a hold, so its release is never forwarded.
+    HandsFreeTogglePressed,
 }
 
 /// §2.1: "capture the ~500 ms *before* the hotkey press. Solves the
@@ -41,8 +48,21 @@ enum PipelineEvent {
 /// possible at all -- there's no re-opening a device to catch up on.
 const PRE_ROLL_DURATION: Duration = Duration::from_millis(500);
 
-/// State for one hotkey-down-to-up recording session.
+/// Which interaction mode a session is running under -- determines what
+/// ends it (a key release, or VAD-detected silence) and what happens
+/// after it ends (nothing, or immediately start listening for the next
+/// utterance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionMode {
+    PushToTalk,
+    HandsFree,
+}
+
+/// State for one recording session, from however it started (a hotkey
+/// press, or a hands-free auto-restart) to however it ends (a hotkey
+/// release, or VAD silence).
 struct Session {
+    mode: SessionMode,
     mark: Mark,
     /// Audio from just before `mark` (§2.1 pre-roll), captured once at
     /// press time. Session audio is conceptually `preroll ++
@@ -61,8 +81,31 @@ struct Session {
     heard_speech: bool,
 }
 
+impl Session {
+    /// Starts a new session of `mode`, capturing the mark and pre-roll
+    /// snippet under one lock acquisition so `preroll` is exactly the
+    /// audio ending right at the mark, with no gap or overlap.
+    fn start(ring: &ring_buffer::SharedRingBuffer, mode: SessionMode) -> Self {
+        let (mark, preroll) = {
+            let guard = ring.lock().expect("ring buffer lock poisoned");
+            let mark = guard.mark();
+            let preroll = guard.read_last_duration(audio_input::TARGET_SAMPLE_RATE_HZ, PRE_ROLL_DURATION);
+            (mark, preroll)
+        };
+        Self {
+            mode,
+            mark,
+            preroll,
+            windows_decoded: 0,
+            committed: String::new(),
+            vad_fed_samples: 0,
+            heard_speech: false,
+        }
+    }
+}
+
 /// The full audio captured so far for `session`: pre-roll followed by
-/// whatever's arrived since the hotkey was pressed.
+/// whatever's arrived since the session started.
 fn session_audio(ring: &ring_buffer::SharedRingBuffer, session: &Session) -> Vec<f32> {
     let mut audio = session.preroll.clone();
     audio.extend(ring.lock().expect("ring buffer lock poisoned").read_since(session.mark));
@@ -168,22 +211,30 @@ fn main() {
          never written to disk. See README.md for details."
     );
 
-    let hotkey_config = HotkeyConfig::default();
+    let hotkey_config = MultiHotkeyConfig::default();
     println!(
-        "Hold {:?} to dictate; release to insert at the cursor. Ctrl+C to quit.",
-        hotkey_config.key
+        "Hold {:?} to dictate (push-to-talk); release to insert at the cursor.",
+        hotkey_config.push_to_talk_key
+    );
+    println!(
+        "Tap {:?} to toggle hands-free mode (VAD silence commits each utterance). Ctrl+C to quit.",
+        hotkey_config.hands_free_toggle_key
     );
 
     let (tx, rx) = mpsc::channel::<PipelineEvent>();
     std::thread::spawn(move || {
-        let result = hotkey::listen_push_to_talk(hotkey_config, move |event| {
-            let mapped = match event {
-                HotkeyEvent::Pressed => PipelineEvent::Pressed,
-                HotkeyEvent::Released => PipelineEvent::Released,
+        let result = hotkey::listen_multi(hotkey_config, move |slot, event| {
+            let mapped = match (slot, event) {
+                (HotkeySlot::PushToTalk, HotkeyEvent::Pressed) => Some(PipelineEvent::PushToTalkPressed),
+                (HotkeySlot::PushToTalk, HotkeyEvent::Released) => Some(PipelineEvent::PushToTalkReleased),
+                (HotkeySlot::HandsFreeToggle, HotkeyEvent::Pressed) => Some(PipelineEvent::HandsFreeTogglePressed),
+                (HotkeySlot::HandsFreeToggle, HotkeyEvent::Released) => None,
             };
             // The receiver only goes away at process shutdown; nothing
             // useful to do with a send failure here.
-            let _ = tx.send(mapped);
+            if let Some(mapped) = mapped {
+                let _ = tx.send(mapped);
+            }
         });
         if let Err(e) = result {
             eprintln!("error: hotkey listener stopped: {e}");
@@ -217,6 +268,7 @@ fn run_pipeline(
     let window_policy = asr::WindowPolicy::default_16k();
     let mut endpointer = vad::Endpointer::new(vad::EndpointConfig::default());
     let mut session: Option<Session> = None;
+    let mut hands_free_active = false;
 
     loop {
         let event = if session.is_some() {
@@ -233,73 +285,137 @@ fn run_pipeline(
         };
 
         match event {
-            Some(PipelineEvent::Pressed) => {
-                // Grab the mark and the pre-roll snippet under the same
-                // lock acquisition so `preroll` is exactly the audio
-                // ending right at `mark`, with no gap or overlap.
-                let (mark, preroll) = {
-                    let guard = ring.lock().expect("ring buffer lock poisoned");
-                    let mark = guard.mark();
-                    let preroll = guard.read_last_duration(audio_input::TARGET_SAMPLE_RATE_HZ, PRE_ROLL_DURATION);
-                    (mark, preroll)
-                };
+            Some(PipelineEvent::PushToTalkPressed) => {
+                if session.is_some() {
+                    continue; // a session (of either mode) is already running; ignore
+                }
                 vad.reset_state();
                 endpointer.reset();
-                session = Some(Session {
-                    mark,
-                    preroll,
-                    windows_decoded: 0,
-                    committed: String::new(),
-                    vad_fed_samples: 0,
-                    heard_speech: false,
-                });
+                session = Some(Session::start(ring, SessionMode::PushToTalk));
                 println!("Recording... (with {PRE_ROLL_DURATION:?} pre-roll)");
             }
-            Some(PipelineEvent::Released) => {
+            Some(PipelineEvent::PushToTalkReleased) => {
                 let Some(mut s) = session.take() else {
                     continue; // release without a matching press; ignore
                 };
-                let audio = session_audio(ring, &s);
-                if let Some((start, end)) = window_policy.final_window(audio.len(), s.windows_decoded) {
-                    decode_window(transcriber, &audio[start..end], &mut s.committed);
+                if s.mode != SessionMode::PushToTalk {
+                    // A hands-free session is running; a stray push-to-talk
+                    // release (its key can't release without a matching
+                    // press, so this shouldn't happen in practice) must not
+                    // steal and end it.
+                    session = Some(s);
+                    continue;
                 }
-                finish_utterance(&s.committed, cleanup, injector);
+                commit_utterance(ring, transcriber, &window_policy, cleanup, injector, &mut s);
+            }
+            Some(PipelineEvent::HandsFreeTogglePressed) => {
+                hands_free_active = !hands_free_active;
+                if hands_free_active {
+                    println!("Hands-free mode: ON (VAD silence commits each utterance)");
+                    if session.is_none() {
+                        vad.reset_state();
+                        endpointer.reset();
+                        session = Some(Session::start(ring, SessionMode::HandsFree));
+                        println!("Listening... (with {PRE_ROLL_DURATION:?} pre-roll)");
+                    }
+                } else {
+                    println!("Hands-free mode: OFF");
+                    if let Some(mut s) = session.take() {
+                        if s.mode == SessionMode::HandsFree {
+                            commit_utterance(ring, transcriber, &window_policy, cleanup, injector, &mut s);
+                        } else {
+                            session = Some(s); // leave an unrelated push-to-talk session alone
+                        }
+                    }
+                }
             }
             None => {
                 // Poll timeout: feed any newly-arrived audio to the VAD,
                 // and decode a new window if one's ready and we've
                 // actually heard speech (§2.2: trim silence rather than
                 // spending decode time on it).
-                if let Some(s) = session.as_mut() {
-                    let audio = session_audio(ring, s);
-                    feed_vad(vad, &mut endpointer, &audio, s);
-                    if s.heard_speech {
-                        if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
-                            decode_window(transcriber, &audio[start..end], &mut s.committed);
-                            s.windows_decoded += 1;
-                        }
+                let Some(s) = session.as_mut() else {
+                    continue;
+                };
+                let audio = session_audio(ring, s);
+                let vad_event = feed_vad(vad, &mut endpointer, &audio, s);
+                if s.heard_speech {
+                    if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
+                        decode_window(transcriber, &audio[start..end], &mut s.committed);
+                        s.windows_decoded += 1;
                     }
+                }
+
+                // §2.2: "hands-free (VAD silence = commit)". Push-to-talk
+                // sessions ignore VAD end-of-speech entirely -- release is
+                // still what commits them.
+                let hands_free_speech_ended =
+                    s.mode == SessionMode::HandsFree && vad_event == Some(vad::EndpointEvent::SpeechEnd);
+                if hands_free_speech_ended {
+                    let mut finished = session.take().expect("checked Some above");
+                    commit_utterance(ring, transcriber, &window_policy, cleanup, injector, &mut finished);
+                    // Hands-free keeps listening: immediately start the next
+                    // utterance's session rather than waiting for another
+                    // toggle press.
+                    vad.reset_state();
+                    endpointer.reset();
+                    session = Some(Session::start(ring, SessionMode::HandsFree));
+                    println!("Listening...");
                 }
             }
         }
     }
 }
 
-fn feed_vad(vad: &mut vad::SileroVad, endpointer: &mut vad::Endpointer, audio: &[f32], session: &mut Session) {
+/// Decodes the trailing partial window and inserts the final text (§2.4:
+/// "pick one string, insert once"). Shared by every way a session can end:
+/// push-to-talk release, hands-free toggle-off, and hands-free
+/// VAD-detected silence.
+fn commit_utterance(
+    ring: &ring_buffer::SharedRingBuffer,
+    transcriber: &asr::Transcriber,
+    window_policy: &asr::WindowPolicy,
+    cleanup: Option<&cleanup::CleanupModel>,
+    injector: &mut inject::TextInjector,
+    session: &mut Session,
+) {
+    let audio = session_audio(ring, session);
+    if let Some((start, end)) = window_policy.final_window(audio.len(), session.windows_decoded) {
+        decode_window(transcriber, &audio[start..end], &mut session.committed);
+    }
+    finish_utterance(&session.committed, cleanup, injector);
+}
+
+/// Feeds newly-arrived audio to the VAD frame by frame, updating the
+/// endpointer and `session.heard_speech`. Returns the last endpoint event
+/// observed during this call, if any -- callers that care about
+/// VAD-triggered commit (hands-free) act on `SpeechEnd`; push-to-talk
+/// sessions just ignore the return value.
+fn feed_vad(
+    vad: &mut vad::SileroVad,
+    endpointer: &mut vad::Endpointer,
+    audio: &[f32],
+    session: &mut Session,
+) -> Option<vad::EndpointEvent> {
+    let mut last_event = None;
     while let Some((start, end)) = vad::next_frame_range(session.vad_fed_samples, audio.len()) {
         match vad.process_frame(&audio[start..end]) {
             Ok(probability) => {
-                if let Some(vad::EndpointEvent::SpeechStart) = endpointer.push_probability(probability) {
-                    if !session.heard_speech {
+                if let Some(event) = endpointer.push_probability(probability) {
+                    if event == vad::EndpointEvent::SpeechStart && !session.heard_speech {
                         println!("(speech detected)");
                     }
-                    session.heard_speech = true;
+                    if event == vad::EndpointEvent::SpeechStart {
+                        session.heard_speech = true;
+                    }
+                    last_event = Some(event);
                 }
             }
             Err(e) => eprintln!("warning: VAD frame failed: {e}"),
         }
         session.vad_fed_samples = end;
     }
+    last_event
 }
 
 fn decode_window(transcriber: &asr::Transcriber, audio: &[f32], committed: &mut String) {

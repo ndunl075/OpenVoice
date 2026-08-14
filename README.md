@@ -51,6 +51,12 @@ and list names/jargon/product names, one per line, to bias ASR decoding
 toward them. Also optional -- no file means no bias, same as before this
 existed.
 
+**Pre-roll (§2.1):** every recording session includes the ~500ms of audio
+from just before the hotkey went down, pulled straight from the always-on
+ring buffer. Solves "I started talking a beat too early and lost my first
+word" -- something a cloud tool structurally can't do, since it isn't
+listening until you've already pressed the key.
+
 **Recording indicator, honestly scoped:** v0 prints recording state to the
 console (it's the only UI that exists yet) -- there's no persistent
 OS-level tray icon showing "mic is live" independent of that terminal

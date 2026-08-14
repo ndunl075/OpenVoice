@@ -12,9 +12,13 @@
 //! the endpointer has actually confirmed speech yet, so holding the
 //! hotkey while thinking doesn't burn decode time on silence.
 //!
-//! v2 addition: once the utterance's raw text is assembled, an optional
+//! v2 additions: once the utterance's raw text is assembled, an optional
 //! cleanup LLM pass (§2.4) races a 120ms deadline to punctuate/declutter
 //! it before `finish_utterance` picks exactly one final string to insert.
+//! Every session also includes ~500ms of pre-roll (§2.1) -- audio from
+//! just before the hotkey went down, pulled from the always-on ring
+//! buffer -- so starting to talk a beat before pressing the key doesn't
+//! lose the first word.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -31,17 +35,38 @@ enum PipelineEvent {
     Released,
 }
 
+/// §2.1: "capture the ~500 ms *before* the hotkey press. Solves the
+/// universal 'I started talking a beat too early and lost my first word'
+/// problem." The ring buffer's always-on capture is what makes this
+/// possible at all -- there's no re-opening a device to catch up on.
+const PRE_ROLL_DURATION: Duration = Duration::from_millis(500);
+
 /// State for one hotkey-down-to-up recording session.
 struct Session {
     mark: Mark,
+    /// Audio from just before `mark` (§2.1 pre-roll), captured once at
+    /// press time. Session audio is conceptually `preroll ++
+    /// read_since(mark)` -- see [`session_audio`] -- so every downstream
+    /// consumer (VAD framing, window scheduling) just sees one continuous
+    /// stream starting slightly before the key actually went down.
+    preroll: Vec<f32>,
     /// How many full rolling windows have already been decoded.
     windows_decoded: usize,
     /// Merged transcript so far, stitched across window overlaps.
     committed: String,
-    /// How many samples (from session start) have already been fed to the VAD.
+    /// How many samples (from session start, i.e. including preroll) have
+    /// already been fed to the VAD.
     vad_fed_samples: usize,
     /// Whether the endpointer has confirmed speech started yet this session.
     heard_speech: bool,
+}
+
+/// The full audio captured so far for `session`: pre-roll followed by
+/// whatever's arrived since the hotkey was pressed.
+fn session_audio(ring: &ring_buffer::SharedRingBuffer, session: &Session) -> Vec<f32> {
+    let mut audio = session.preroll.clone();
+    audio.extend(ring.lock().expect("ring buffer lock poisoned").read_since(session.mark));
+    audio
 }
 
 fn main() {
@@ -209,23 +234,32 @@ fn run_pipeline(
 
         match event {
             Some(PipelineEvent::Pressed) => {
-                let mark = ring.lock().expect("ring buffer lock poisoned").mark();
+                // Grab the mark and the pre-roll snippet under the same
+                // lock acquisition so `preroll` is exactly the audio
+                // ending right at `mark`, with no gap or overlap.
+                let (mark, preroll) = {
+                    let guard = ring.lock().expect("ring buffer lock poisoned");
+                    let mark = guard.mark();
+                    let preroll = guard.read_last_duration(audio_input::TARGET_SAMPLE_RATE_HZ, PRE_ROLL_DURATION);
+                    (mark, preroll)
+                };
                 vad.reset_state();
                 endpointer.reset();
                 session = Some(Session {
                     mark,
+                    preroll,
                     windows_decoded: 0,
                     committed: String::new(),
                     vad_fed_samples: 0,
                     heard_speech: false,
                 });
-                println!("Recording...");
+                println!("Recording... (with {PRE_ROLL_DURATION:?} pre-roll)");
             }
             Some(PipelineEvent::Released) => {
                 let Some(mut s) = session.take() else {
                     continue; // release without a matching press; ignore
                 };
-                let audio = ring.lock().expect("ring buffer lock poisoned").read_since(s.mark);
+                let audio = session_audio(ring, &s);
                 if let Some((start, end)) = window_policy.final_window(audio.len(), s.windows_decoded) {
                     decode_window(transcriber, &audio[start..end], &mut s.committed);
                 }
@@ -237,7 +271,7 @@ fn run_pipeline(
                 // actually heard speech (§2.2: trim silence rather than
                 // spending decode time on it).
                 if let Some(s) = session.as_mut() {
-                    let audio = ring.lock().expect("ring buffer lock poisoned").read_since(s.mark);
+                    let audio = session_audio(ring, s);
                     feed_vad(vad, &mut endpointer, &audio, s);
                     if s.heard_speech {
                         if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {

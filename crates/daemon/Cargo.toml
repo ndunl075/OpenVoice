@@ -15,4 +15,5 @@ cleanup = { version = "0.1.0", path = "../cleanup" }
 hotkey = { version = "0.1.0", path = "../hotkey" }
 inject = { version = "0.1.0", path = "../inject" }
 ring-buffer = { version = "0.1.0", path = "../ring-buffer" }
+thiserror = "2.0.20"
 vad = { version = "0.1.0", path = "../vad" }

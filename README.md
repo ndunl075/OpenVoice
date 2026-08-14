@@ -32,7 +32,10 @@ curl -L -o models/silero_vad.onnx \
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
   https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
-# 2. Run the daemon
+# 2. Run it -- GUI (tray icon + floating recording pill, no console window)
+cargo run -p tray-app --release
+
+# ...or the console version, if you'd rather see raw log output
 cargo run -p daemon --release
 ```
 
@@ -71,13 +74,16 @@ utterances. Tap AltGr again to stop. Push-to-talk (Right Ctrl) and
 hands-free are mutually exclusive: whichever session is active, the other
 mode's key is ignored until it ends.
 
-**Recording indicator, honestly scoped:** v0 prints recording state to the
-console (it's the only UI that exists yet) -- there's no persistent
-OS-level tray icon showing "mic is live" independent of that terminal
-window. The architecture doc calls a visible indicator out as necessary
-before this is trustworthy to ship publicly (see "Honest risks" in
-`dictation-architecture.md`); a real tray icon is tracked as follow-up
-work, not silently assumed to exist.
+**Recording indicator:** `tray-app` (see [`crates/tray-app`](crates/tray-app))
+gives you a system tray icon -- an original mic glyph, not a copy of any
+product's logo, whose background color reflects pipeline state at a
+glance -- plus a small floating pill near the bottom of the screen that
+appears while recording/listening/thinking and briefly shows the result
+before fading. The architecture doc calls a visible indicator out as
+necessary before an always-on mic is trustworthy to ship publicly (see
+"Honest risks" in `dictation-architecture.md`); this is that. The
+console binary (`daemon`) still exists and still just prints to stdout,
+for headless/debugging use -- `tray-app` is the one with an actual UI.
 
 ## Privacy: the always-on buffer
 
@@ -93,8 +99,8 @@ the thing an on-device product cannot be sloppy about:
   a slice out for transcription. Transcription is 100% local; no network
   calls exist anywhere in the audio path.
 - A visible recording indicator is required before "always-on" ships
-  publicly (see "Recording indicator, honestly scoped" above) -- today
-  that's console output, not yet a persistent tray icon.
+  publicly (see "Recording indicator" above) -- `tray-app`'s tray icon
+  and floating pill are that indicator.
 - This is enforced in code, not just documented: [`crates/ring-buffer`](crates/ring-buffer)
   has no file I/O and no network dependency at all — check its `Cargo.toml`.
 
@@ -109,18 +115,15 @@ the thing an on-device product cannot be sloppy about:
 | [`asr`](crates/asr) | §2.3 | Streaming/batch transcription via `whisper-rs` |
 | [`cleanup`](crates/cleanup) | §2.4 | Deadlined disfluency cleanup via `llama.cpp` |
 | [`inject`](crates/inject) | §2.5 | Clipboard-swap paste, per-character fallback |
-| [`daemon`](crates/daemon) | §2 | Binary that wires all of the above together |
+| [`daemon`](crates/daemon) | §2 | The engine as a library (`Engine`) + a thin console binary |
+| [`tray-app`](crates/tray-app) | §3 ("Tray + minimal overlay") | System tray icon + floating recording pill GUI, drives the same `Engine` |
 
 ## Known gaps vs. the architecture doc
 
-§4's build order (the actual required checklist) is fully implemented.
-Two things §3's stack table mentions are not, because §4 never lists them
-as deliverables:
+§4's build order (the actual required checklist) is fully implemented,
+and so is §3's "Tray + minimal overlay" ([`tray-app`](crates/tray-app)).
+One thing §3 mentions is still not built:
 
-- **Tray icon UI.** §3 lists "Tray + minimal overlay"; §4 doesn't include
-  it in any of v0/v1/v2. The recording indicator today is console output
-  (see above) -- a real persistent tray icon is real follow-up work, not
-  something quietly assumed to exist.
 - **GPU backends.** §2.3 mentions Metal/CUDA backends for whisper.cpp;
   `asr`'s `Cargo.toml` doesn't enable whisper-rs's `cuda`/`metal` feature
   flags, so this build is CPU-only (whisper.cpp's own AVX2 auto-detection
@@ -137,10 +140,13 @@ never part of the required build order in the first place.
 Requires the Rust toolchain, `cmake`, and a `libclang` bindgen can find via
 `LIBCLANG_PATH` (`asr`, `vad`, and `cleanup` all compile a C/C++ inference
 engine from source). See `crates/asr/README.md` for the specifics.
+`tray-app` additionally pulls in `eframe`/`egui` (windowing + rendering)
+and `tray-icon` -- no extra native toolchain beyond what's already
+required, just a longer first build.
 
 ```sh
 cargo build --workspace
-cargo test --workspace    # 77 tests, all pure-logic; hardware/model paths are compile-verified only
+cargo test --workspace    # 83 tests, all pure-logic; hardware/model paths are compile-verified only
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

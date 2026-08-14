@@ -9,6 +9,7 @@ members = [
     "crates/inject",
     "crates/cleanup",
     "crates/daemon",
+    "crates/tray-app",
 ]
 
 [workspace.package]

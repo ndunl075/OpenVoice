@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 asr = { version = "0.1.0", path = "../asr" }
 audio-input = { version = "0.1.0", path = "../audio-input" }
+cleanup = { version = "0.1.0", path = "../cleanup" }
 hotkey = { version = "0.1.0", path = "../hotkey" }
 inject = { version = "0.1.0", path = "../inject" }
 ring-buffer = { version = "0.1.0", path = "../ring-buffer" }

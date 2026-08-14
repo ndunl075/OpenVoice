@@ -52,7 +52,27 @@ fn main() {
     println!("ASR model: {}", model_path.display());
     println!("VAD model: {}", vad_model_path.display());
 
-    let transcriber = match asr::Transcriber::load(asr::AsrConfig::new(model_path)) {
+    let mut asr_config = asr::AsrConfig::new(model_path);
+    match asr::load_dictionary_file(dictionary_path()) {
+        Ok(terms) => {
+            asr_config.initial_prompt = asr::build_initial_prompt(&terms);
+            match &asr_config.initial_prompt {
+                Some(_) => println!("User dictionary: {} term(s) loaded", terms.len()),
+                None => println!("User dictionary: {} is empty, no bias applied", dictionary_path().display()),
+            }
+        }
+        Err(_) => {
+            // No dictionary file is the expected common case (§2.3's
+            // custom vocab is an optional accuracy boost, not required) --
+            // just decode without a bias, same as before this existed.
+            println!(
+                "User dictionary: none found at {} (optional; see README.md)",
+                dictionary_path().display()
+            );
+        }
+    }
+
+    let transcriber = match asr::Transcriber::load(asr_config) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: couldn't load ASR model: {e}");
@@ -314,4 +334,14 @@ fn cleanup_model_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
     PathBuf::from("models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
+}
+
+/// User dictionary path: `DICTATION_DICTIONARY_PATH`, then a plain-text
+/// `dictionary.txt` in the working directory. See README.md for the
+/// (one-term-per-line) format.
+fn dictionary_path() -> PathBuf {
+    if let Ok(env_path) = std::env::var("DICTATION_DICTIONARY_PATH") {
+        return PathBuf::from(env_path);
+    }
+    PathBuf::from("dictionary.txt")
 }

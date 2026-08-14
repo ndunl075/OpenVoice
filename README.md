@@ -45,6 +45,12 @@ cleanup model (§2.4) is optional -- if `models/qwen2.5-0.5b-instruct-q4_k_m.ggu
 runs without it rather than refusing to start; every utterance falls back
 to raw ASR text.
 
+**User dictionary (§2.3 "custom vocab"):** copy [`dictionary.example.txt`](dictionary.example.txt)
+to `dictionary.txt` (or point `DICTATION_DICTIONARY_PATH` at your own file)
+and list names/jargon/product names, one per line, to bias ASR decoding
+toward them. Also optional -- no file means no bias, same as before this
+existed.
+
 **Recording indicator, honestly scoped:** v0 prints recording state to the
 console (it's the only UI that exists yet) -- there's no persistent
 OS-level tray icon showing "mic is live" independent of that terminal

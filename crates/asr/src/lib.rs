@@ -21,10 +21,12 @@
 //! See [`README`](https://github.com/ndunl075/wispr-flow-clone/tree/main/crates/asr)
 //! for how to fetch a model; none is checked into the repo.
 
+mod dictionary;
 mod merge;
 mod text;
 mod window;
 
+pub use dictionary::{build_initial_prompt, load_dictionary_file, parse_dictionary};
 pub use merge::merge_overlap;
 pub use window::WindowPolicy;
 
@@ -53,9 +55,8 @@ pub struct AsrConfig {
     pub language: Option<String>,
     pub n_threads: i32,
     /// Seeds decoding to bias toward names/jargon/product names (§2.3,
-    /// "custom vocab"). Wired up for real in the v2 user-dictionary commit;
-    /// the field exists now so `AsrConfig` doesn't need to change shape
-    /// later.
+    /// "custom vocab"). Build this from a user's dictionary file with
+    /// [`load_dictionary_file`] + [`build_initial_prompt`].
     pub initial_prompt: Option<String>,
 }
 

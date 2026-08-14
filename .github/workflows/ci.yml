@@ -8,6 +8,10 @@ on:
 jobs:
   build-and-test:
     runs-on: windows-latest
+    env:
+      # bindgen (whisper-rs-sys, ort) needs libclang; windows-latest ships
+      # a full LLVM install at this path already.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v4
 

@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Model weights are large binary downloads, not source. See README for fetch instructions.
+/models/
+*.gguf
+*.onnx
+*.bin
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

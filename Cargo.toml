@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ring-buffer",
+    "crates/audio-input",
+    "crates/hotkey",
+    "crates/asr",
+    "crates/vad",
+    "crates/inject",
+    "crates/cleanup",
+    "crates/daemon",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ndunl075/wispr-flow-clone"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

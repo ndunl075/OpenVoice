@@ -1,9 +1,14 @@
-//! Batch transcription via `whisper-rs` (whisper.cpp).
+//! Transcription via `whisper-rs` (whisper.cpp).
 //!
-//! See `dictation-architecture.md` §2.3. This is the v0 shape: decode the
-//! whole utterance once, after the hotkey is released. v1 adds rolling
-//! windowed decode *while the user is still talking* -- see the module
-//! docs there for why that's the actual latency win.
+//! See `dictation-architecture.md` §2.3. [`Transcriber::transcribe`]
+//! decodes one chunk of audio at a time and is intentionally unopinionated
+//! about *when* it's called: fed the whole utterance once at hotkey
+//! release, it's v0's "batch on release" shape; fed successive rolling
+//! windows while the user is still talking (via [`WindowPolicy`], stitched
+//! back together with [`merge_overlap`]), it's v1's streaming shape --
+//! the actual latency win (§1: "transcription should be nearly finished
+//! before the user stops talking"). The daemon owns driving that loop;
+//! see `crates/daemon` for the orchestration.
 //!
 //! Decode settings are fixed to what the doc calls out as the cheap,
 //! high-value wins:
@@ -16,7 +21,12 @@
 //! See [`README`](https://github.com/ndunl075/wispr-flow-clone/tree/main/crates/asr)
 //! for how to fetch a model; none is checked into the repo.
 
+mod merge;
 mod text;
+mod window;
+
+pub use merge::merge_overlap;
+pub use window::WindowPolicy;
 
 use std::path::PathBuf;
 

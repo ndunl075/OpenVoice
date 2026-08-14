@@ -1,13 +1,20 @@
 //! Resident daemon: wires the ring buffer, mic capture, push-to-talk
-//! hotkey, batch Whisper transcription, and clipboard text injection
-//! together into the v0 demo pipeline from `dictation-architecture.md`.
+//! hotkey, VAD-gated streaming Whisper transcription, and clipboard text
+//! injection together into the v1 pipeline from
+//! `dictation-architecture.md`.
 //!
-//! v0 shape (§4): hold hotkey -> record, release -> batch-transcribe the
-//! whole utterance -> insert at cursor. No VAD, no streaming, no cleanup
-//! pass yet -- those land in v1/v2 on top of this same skeleton.
+//! v1 shape (§4): still push-to-talk (hands-free VAD-commit is v2), but
+//! now decoding happens continuously *while the key is held* instead of
+//! waiting for release. Rolling 3s/0.5s-overlap windows (§2.3) get
+//! transcribed as soon as they're ready, stitched together with
+//! `asr::merge_overlap`; at release, only the trailing partial window is
+//! still outstanding. Silero VAD (§2.2) gates window decoding on whether
+//! the endpointer has actually confirmed speech yet, so holding the
+//! hotkey while thinking doesn't burn decode time on silence.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use hotkey::{HotkeyConfig, HotkeyEvent};
 use ring_buffer::Mark;
@@ -20,17 +27,41 @@ enum PipelineEvent {
     Released,
 }
 
+/// State for one hotkey-down-to-up recording session.
+struct Session {
+    mark: Mark,
+    /// How many full rolling windows have already been decoded.
+    windows_decoded: usize,
+    /// Merged transcript so far, stitched across window overlaps.
+    committed: String,
+    /// How many samples (from session start) have already been fed to the VAD.
+    vad_fed_samples: usize,
+    /// Whether the endpointer has confirmed speech started yet this session.
+    heard_speech: bool,
+}
+
 fn main() {
     let model_path = model_path();
+    let vad_model_path = vad_model_path();
 
-    println!("Local Dictation Engine -- v0 demo");
-    println!("Model: {}", model_path.display());
+    println!("Local Dictation Engine -- v1 (streaming + VAD)");
+    println!("ASR model: {}", model_path.display());
+    println!("VAD model: {}", vad_model_path.display());
 
     let transcriber = match asr::Transcriber::load(asr::AsrConfig::new(model_path)) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: couldn't load ASR model: {e}");
             eprintln!("See crates/asr/README.md for how to fetch a model file.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut vad = match vad::SileroVad::load(vad_model_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: couldn't load VAD model: {e}");
+            eprintln!("See crates/vad/README.md for how to fetch a model file.");
             std::process::exit(1);
         }
     };
@@ -91,50 +122,83 @@ fn main() {
         }
     });
 
-    run_pipeline(rx, &ring, &transcriber, &mut injector);
+    run_pipeline(rx, &ring, &transcriber, &mut vad, &mut injector);
 }
 
-/// The main worker loop: turns hotkey press/release pairs into recorded
-/// audio, transcribed text, and inserted text. Runs on its own thread (via
-/// the channel), separate from the OS-level keyboard hook, so a slow
-/// transcription never risks the hook watchdog thinking the hook is stuck.
+/// How often the worker checks for newly-ready VAD frames / decode
+/// windows while the hotkey is held. Small enough that a window becomes
+/// available for decode close to the moment its last sample lands, large
+/// enough not to spin the loop pointlessly.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The main worker loop. Runs on its own thread (via the channel),
+/// separate from the OS-level keyboard hook, so a transcription can never
+/// risk the hook watchdog thinking the hook is stuck. While idle it just
+/// blocks on the next hotkey event; while recording it polls at
+/// [`POLL_INTERVAL`] so it can decode windows as they become ready without
+/// waiting for release.
 fn run_pipeline(
     rx: mpsc::Receiver<PipelineEvent>,
     ring: &ring_buffer::SharedRingBuffer,
     transcriber: &asr::Transcriber,
+    vad: &mut vad::SileroVad,
     injector: &mut inject::TextInjector,
 ) {
-    let mut session_start: Option<Mark> = None;
+    let window_policy = asr::WindowPolicy::default_16k();
+    let mut endpointer = vad::Endpointer::new(vad::EndpointConfig::default());
+    let mut session: Option<Session> = None;
 
-    for event in rx {
+    loop {
+        let event = if session.is_some() {
+            match rx.recv_timeout(POLL_INTERVAL) {
+                Ok(event) => Some(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(event) => Some(event),
+                Err(_disconnected) => break,
+            }
+        };
+
         match event {
-            PipelineEvent::Pressed => {
+            Some(PipelineEvent::Pressed) => {
                 let mark = ring.lock().expect("ring buffer lock poisoned").mark();
-                session_start = Some(mark);
+                vad.reset_state();
+                endpointer.reset();
+                session = Some(Session {
+                    mark,
+                    windows_decoded: 0,
+                    committed: String::new(),
+                    vad_fed_samples: 0,
+                    heard_speech: false,
+                });
                 println!("Recording...");
             }
-            PipelineEvent::Released => {
-                let Some(mark) = session_start.take() else {
+            Some(PipelineEvent::Released) => {
+                let Some(mut s) = session.take() else {
                     continue; // release without a matching press; ignore
                 };
-                let audio = ring.lock().expect("ring buffer lock poisoned").read_since(mark);
-                if audio.is_empty() {
-                    println!("(no audio captured)");
-                    continue;
+                let audio = ring.lock().expect("ring buffer lock poisoned").read_since(s.mark);
+                if let Some((start, end)) = window_policy.final_window(audio.len(), s.windows_decoded) {
+                    decode_window(transcriber, &audio[start..end], &mut s.committed);
                 }
-
-                match transcriber.transcribe(&audio) {
-                    Ok(text) if text.trim().is_empty() => {
-                        println!("(heard nothing)");
-                    }
-                    Ok(text) => {
-                        println!("-> {text}");
-                        if let Err(e) = injector.inject(&text) {
-                            eprintln!("warning: couldn't insert text: {e}");
+                finish_utterance(&s.committed, injector);
+            }
+            None => {
+                // Poll timeout: feed any newly-arrived audio to the VAD,
+                // and decode a new window if one's ready and we've
+                // actually heard speech (§2.2: trim silence rather than
+                // spending decode time on it).
+                if let Some(s) = session.as_mut() {
+                    let audio = ring.lock().expect("ring buffer lock poisoned").read_since(s.mark);
+                    feed_vad(vad, &mut endpointer, &audio, s);
+                    if s.heard_speech {
+                        if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
+                            decode_window(transcriber, &audio[start..end], &mut s.committed);
+                            s.windows_decoded += 1;
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("warning: transcription failed: {e}");
                     }
                 }
             }
@@ -142,7 +206,46 @@ fn run_pipeline(
     }
 }
 
-/// Model path: first CLI arg, then `DICTATION_MODEL_PATH`, then the
+fn feed_vad(vad: &mut vad::SileroVad, endpointer: &mut vad::Endpointer, audio: &[f32], session: &mut Session) {
+    while let Some((start, end)) = vad::next_frame_range(session.vad_fed_samples, audio.len()) {
+        match vad.process_frame(&audio[start..end]) {
+            Ok(probability) => {
+                if let Some(vad::EndpointEvent::SpeechStart) = endpointer.push_probability(probability) {
+                    if !session.heard_speech {
+                        println!("(speech detected)");
+                    }
+                    session.heard_speech = true;
+                }
+            }
+            Err(e) => eprintln!("warning: VAD frame failed: {e}"),
+        }
+        session.vad_fed_samples = end;
+    }
+}
+
+fn decode_window(transcriber: &asr::Transcriber, audio: &[f32], committed: &mut String) {
+    match transcriber.transcribe(audio) {
+        Ok(text) if !text.trim().is_empty() => {
+            *committed = asr::merge_overlap(committed, &text);
+            println!("... {committed}");
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: transcription failed: {e}"),
+    }
+}
+
+fn finish_utterance(committed: &str, injector: &mut inject::TextInjector) {
+    if committed.trim().is_empty() {
+        println!("(heard nothing)");
+        return;
+    }
+    println!("-> {committed}");
+    if let Err(e) = injector.inject(committed) {
+        eprintln!("warning: couldn't insert text: {e}");
+    }
+}
+
+/// ASR model path: first CLI arg, then `DICTATION_MODEL_PATH`, then the
 /// default fetched by `crates/asr/README.md`'s instructions.
 fn model_path() -> PathBuf {
     if let Some(arg) = std::env::args().nth(1) {
@@ -152,4 +255,13 @@ fn model_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
     PathBuf::from("models/ggml-small.en-q5_1.bin")
+}
+
+/// VAD model path: `DICTATION_VAD_MODEL_PATH`, then the default fetched by
+/// `crates/vad/README.md`'s instructions.
+fn vad_model_path() -> PathBuf {
+    if let Ok(env_path) = std::env::var("DICTATION_VAD_MODEL_PATH") {
+        return PathBuf::from(env_path);
+    }
+    PathBuf::from("models/silero_vad.onnx")
 }

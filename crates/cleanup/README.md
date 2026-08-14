@@ -11,7 +11,7 @@ Not checked into the repo (binary, not source -- see the root
 ```sh
 mkdir -p models
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
-  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2_5-0_5b-instruct-q4_k_m.gguf
+  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 
 Any instruct-tuned model that speaks ChatML should work with

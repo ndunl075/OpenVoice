@@ -7,14 +7,18 @@ this README tracks what's actually built.
 
 ## Status
 
-Working through the architecture doc's build order: **v0 → v1 → v2**. See
-the checklist below; boxes are checked as each piece lands on `main`.
+The architecture doc's full build order is implemented: **v0 → v1 → v2**,
+each merged as its own reviewed PR with a green CI run.
 
 - [x] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
       on release, clipboard-paste injection.
 - [x] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
 - [x] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
+
+That's every item §4's build order calls for. See "Known gaps" below for
+what's in the doc but *outside* that checklist (§3's stack table has a
+couple of entries §4 never actually requires) and hasn't been built.
 
 ## Running
 
@@ -107,15 +111,38 @@ the thing an on-device product cannot be sloppy about:
 | [`inject`](crates/inject) | §2.5 | Clipboard-swap paste, per-character fallback |
 | [`daemon`](crates/daemon) | §2 | Binary that wires all of the above together |
 
+## Known gaps vs. the architecture doc
+
+§4's build order (the actual required checklist) is fully implemented.
+Two things §3's stack table mentions are not, because §4 never lists them
+as deliverables:
+
+- **Tray icon UI.** §3 lists "Tray + minimal overlay"; §4 doesn't include
+  it in any of v0/v1/v2. The recording indicator today is console output
+  (see above) -- a real persistent tray icon is real follow-up work, not
+  something quietly assumed to exist.
+- **GPU backends.** §2.3 mentions Metal/CUDA backends for whisper.cpp;
+  `asr`'s `Cargo.toml` doesn't enable whisper-rs's `cuda`/`metal` feature
+  flags, so this build is CPU-only (whisper.cpp's own AVX2 auto-detection
+  still applies -- that's the "CPU/AVX2 fallback" leg of §2.3's backend
+  list, just not the GPU-accelerated ones). Enabling `cuda` needs a CUDA
+  toolkit on the build machine and hasn't been tested here.
+
+Explicitly *not* a gap: §3's aside about benchmarking NVIDIA Parakeet-TDT
+is framed there as "a v2 investigation, not a v1 dependency" -- it was
+never part of the required build order in the first place.
+
 ## Building
 
-Requires the Rust toolchain and `cmake` (for the whisper.cpp / ONNX Runtime
-native builds pulled in by `asr` and `vad`).
+Requires the Rust toolchain, `cmake`, and a `libclang` bindgen can find via
+`LIBCLANG_PATH` (`asr`, `vad`, and `cleanup` all compile a C/C++ inference
+engine from source). See `crates/asr/README.md` for the specifics.
 
 ```sh
 cargo build --workspace
-cargo test --workspace
+cargo test --workspace    # 77 tests, all pure-logic; hardware/model paths are compile-verified only
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Model weights are not checked into the repo (see `.gitignore`) — fetch
-instructions land alongside the ASR crate once it's implemented.
+Model weights are not checked into the repo (see `.gitignore`) -- see
+"Running" above, or each crate's own README, for fetch instructions.

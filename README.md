@@ -10,11 +10,36 @@ this README tracks what's actually built.
 Working through the architecture doc's build order: **v0 → v1 → v2**. See
 the checklist below; boxes are checked as each piece lands on `main`.
 
-- [ ] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
+- [x] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
       on release, clipboard-paste injection.
 - [ ] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
 - [ ] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
+
+## Running v0
+
+```sh
+# 1. Fetch a model (see crates/asr/README.md)
+mkdir -p models
+curl -L -o models/ggml-small.en-q5_1.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+
+# 2. Run the daemon
+cargo run -p daemon --release
+```
+
+Hold Right Ctrl to dictate, release to insert the transcribed text at the
+cursor. The model path defaults to `models/ggml-small.en-q5_1.bin`; override
+it with a CLI arg (`cargo run -p daemon --release -- path/to/model.bin`) or
+the `DICTATION_MODEL_PATH` env var.
+
+**Recording indicator, honestly scoped:** v0 prints recording state to the
+console (it's the only UI that exists yet) -- there's no persistent
+OS-level tray icon showing "mic is live" independent of that terminal
+window. The architecture doc calls a visible indicator out as necessary
+before this is trustworthy to ship publicly (see "Honest risks" in
+`dictation-architecture.md`); a real tray icon is tracked as follow-up
+work, not silently assumed to exist.
 
 ## Privacy: the always-on buffer
 

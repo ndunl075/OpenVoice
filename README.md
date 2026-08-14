@@ -19,12 +19,14 @@ the checklist below; boxes are checked as each piece lands on `main`.
 ## Running
 
 ```sh
-# 1. Fetch models (see crates/asr/README.md and crates/vad/README.md)
+# 1. Fetch models (see crates/asr, crates/vad, crates/cleanup READMEs)
 mkdir -p models
 curl -L -o models/ggml-small.en-q5_1.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
 curl -L -o models/silero_vad.onnx \
   https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2_5-0_5b-instruct-q4_k_m.gguf
 
 # 2. Run the daemon
 cargo run -p daemon --release
@@ -37,7 +39,11 @@ trailing partial window is left to decode at that point. The ASR model path
 defaults to `models/ggml-small.en-q5_1.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
-`models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`.
+`models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`. The
+cleanup model (§2.4) is optional -- if `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`
+(or `DICTATION_CLEANUP_MODEL_PATH`) isn't found, the daemon logs that and
+runs without it rather than refusing to start; every utterance falls back
+to raw ASR text.
 
 **Recording indicator, honestly scoped:** v0 prints recording state to the
 console (it's the only UI that exists yet) -- there's no persistent
@@ -60,8 +66,9 @@ the thing an on-device product cannot be sloppy about:
 - Audio only leaves the ring buffer when a hotkey press or VAD trigger pulls
   a slice out for transcription. Transcription is 100% local; no network
   calls exist anywhere in the audio path.
-- The tray app shows a visible recording indicator whenever the mic stream
-  is active, so "always-on" is never invisible.
+- A visible recording indicator is required before "always-on" ships
+  publicly (see "Recording indicator, honestly scoped" above) -- today
+  that's console output, not yet a persistent tray icon.
 - This is enforced in code, not just documented: [`crates/ring-buffer`](crates/ring-buffer)
   has no file I/O and no network dependency at all — check its `Cargo.toml`.
 

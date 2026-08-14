@@ -1,16 +1,20 @@
 //! Resident daemon: wires the ring buffer, mic capture, push-to-talk
-//! hotkey, VAD-gated streaming Whisper transcription, and clipboard text
-//! injection together into the v1 pipeline from
+//! hotkey, VAD-gated streaming Whisper transcription, an optional
+//! deadlined cleanup pass, and clipboard text injection together per
 //! `dictation-architecture.md`.
 //!
 //! v1 shape (§4): still push-to-talk (hands-free VAD-commit is v2), but
-//! now decoding happens continuously *while the key is held* instead of
+//! decoding happens continuously *while the key is held* instead of
 //! waiting for release. Rolling 3s/0.5s-overlap windows (§2.3) get
 //! transcribed as soon as they're ready, stitched together with
 //! `asr::merge_overlap`; at release, only the trailing partial window is
 //! still outstanding. Silero VAD (§2.2) gates window decoding on whether
 //! the endpointer has actually confirmed speech yet, so holding the
 //! hotkey while thinking doesn't burn decode time on silence.
+//!
+//! v2 addition: once the utterance's raw text is assembled, an optional
+//! cleanup LLM pass (§2.4) races a 120ms deadline to punctuate/declutter
+//! it before `finish_utterance` picks exactly one final string to insert.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -63,6 +67,26 @@ fn main() {
             eprintln!("error: couldn't load VAD model: {e}");
             eprintln!("See crates/vad/README.md for how to fetch a model file.");
             std::process::exit(1);
+        }
+    };
+
+    // §2.4: the cleanup pass is explicitly optional. Unlike ASR/VAD, a
+    // missing model here doesn't stop the daemon -- it just means every
+    // utterance falls back to raw ASR text, same as before this feature
+    // existed.
+    let cleanup_model_path = cleanup_model_path();
+    let cleanup = match cleanup::CleanupModel::load(&cleanup_model_path) {
+        Ok(c) => {
+            println!("Cleanup model: {}", cleanup_model_path.display());
+            Some(c)
+        }
+        Err(e) => {
+            println!(
+                "Cleanup pass disabled (couldn't load {}): {e}",
+                cleanup_model_path.display()
+            );
+            println!("See crates/cleanup/README.md for how to fetch a model file.");
+            None
         }
     };
 
@@ -122,7 +146,7 @@ fn main() {
         }
     });
 
-    run_pipeline(rx, &ring, &transcriber, &mut vad, &mut injector);
+    run_pipeline(rx, &ring, &transcriber, &mut vad, cleanup.as_ref(), &mut injector);
 }
 
 /// How often the worker checks for newly-ready VAD frames / decode
@@ -142,6 +166,7 @@ fn run_pipeline(
     ring: &ring_buffer::SharedRingBuffer,
     transcriber: &asr::Transcriber,
     vad: &mut vad::SileroVad,
+    cleanup: Option<&cleanup::CleanupModel>,
     injector: &mut inject::TextInjector,
 ) {
     let window_policy = asr::WindowPolicy::default_16k();
@@ -184,7 +209,7 @@ fn run_pipeline(
                 if let Some((start, end)) = window_policy.final_window(audio.len(), s.windows_decoded) {
                     decode_window(transcriber, &audio[start..end], &mut s.committed);
                 }
-                finish_utterance(&s.committed, injector);
+                finish_utterance(&s.committed, cleanup, injector);
             }
             None => {
                 // Poll timeout: feed any newly-arrived audio to the VAD,
@@ -234,13 +259,29 @@ fn decode_window(transcriber: &asr::Transcriber, audio: &[f32], committed: &mut 
     }
 }
 
-fn finish_utterance(committed: &str, injector: &mut inject::TextInjector) {
+/// Picks exactly one final string and inserts it once (§2.4: "Do not
+/// insert raw text and then patch it afterward"). If a cleanup model is
+/// configured, this is the one place its deadlined output is raced and
+/// decided -- never revisited afterward, whichever way it comes out.
+fn finish_utterance(committed: &str, cleanup: Option<&cleanup::CleanupModel>, injector: &mut inject::TextInjector) {
     if committed.trim().is_empty() {
         println!("(heard nothing)");
         return;
     }
-    println!("-> {committed}");
-    if let Err(e) = injector.inject(committed) {
+
+    let cleaned = cleanup.and_then(|c| c.clean(committed));
+    let final_text = match &cleaned {
+        Some(text) if !text.trim().is_empty() => {
+            println!("-> {text}");
+            text.as_str()
+        }
+        _ => {
+            println!("-> {committed}");
+            committed
+        }
+    };
+
+    if let Err(e) = injector.inject(final_text) {
         eprintln!("warning: couldn't insert text: {e}");
     }
 }
@@ -264,4 +305,13 @@ fn vad_model_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
     PathBuf::from("models/silero_vad.onnx")
+}
+
+/// Cleanup model path: `DICTATION_CLEANUP_MODEL_PATH`, then the default
+/// fetched by `crates/cleanup/README.md`'s instructions.
+fn cleanup_model_path() -> PathBuf {
+    if let Ok(env_path) = std::env::var("DICTATION_CLEANUP_MODEL_PATH") {
+        return PathBuf::from(env_path);
+    }
+    PathBuf::from("models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
 }

@@ -25,8 +25,8 @@ couple of entries §4 never actually requires) and hasn't been built.
 ```sh
 # 1. Fetch models (see crates/asr, crates/vad, crates/cleanup READMEs)
 mkdir -p models
-curl -L -o models/ggml-small.en-q5_1.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+curl -L -o models/ggml-distil-small.en.bin \
+  https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
 curl -L -o models/silero_vad.onnx \
   https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
@@ -60,7 +60,7 @@ while typing normally); a chord basically never happens unintentionally.
 As of v1, transcription streams continuously while the chord is held
 (rolling 3s windows, §2.3) instead of waiting for release -- only the
 trailing partial window is left to decode at that point. The ASR model path
-defaults to `models/ggml-small.en-q5_1.bin`; override it with a CLI arg
+defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
 `models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`. The
@@ -100,6 +100,27 @@ necessary before an always-on mic is trustworthy to ship publicly (see
 "Honest risks" in `dictation-architecture.md`); this is that. The
 console binary (`daemon`) still exists and still just prints to stdout,
 for headless/debugging use -- `tray-app` is the one with an actual UI.
+
+## Performance: why decoding used to be so slow
+
+Real talk: for a while, actual transcription was badly slow -- multiple
+*seconds* per short window, not the sub-200ms this whole project is
+about. Root cause, found by actually benchmarking instead of guessing:
+whisper.cpp's `audio_ctx` decode parameter defaults to "encode a full
+30-second context," no matter how much audio you actually hand it. Every
+decode call was paying for 30 seconds of encoder compute even on a
+1-3 second clip. Scoping it to the real audio length
+([`crates/asr/src/audio_ctx.rs`](crates/asr/src/audio_ctx.rs)) measured
+an **~11.7x speedup** on real hardware (a 3s clip: ~62s to decode → ~5s),
+for zero accuracy cost. Also switched the default model to
+`distil-small.en` (fewer decoder layers, faster on top of that fix) and,
+on Windows/MSVC, fixed `whisper-rs-sys`'s CMake build silently landing on
+scalar-only code with every SIMD flag off (see `.cargo/config.toml`).
+
+If it ever feels slow again: benchmark it
+(`crates/asr/README.md`'s "Benchmarking" section has the exact commands)
+before changing anything. This regression shipped for a while because
+nobody had actually timed a real decode call.
 
 ## Privacy: the always-on buffer
 

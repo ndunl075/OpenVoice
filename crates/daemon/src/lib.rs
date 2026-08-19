@@ -157,6 +157,10 @@ fn session_audio(ring: &ring_buffer::SharedRingBuffer, session: &Session) -> Vec
 
 /// ASR model path: first CLI arg, then `DICTATION_MODEL_PATH`, then the
 /// default fetched by `crates/asr/README.md`'s instructions.
+///
+/// distil-small.en over small.en: measurably faster decode (fewer decoder
+/// layers) on top of the `audio_ctx` fix (see `crates/asr/src/audio_ctx.rs`),
+/// which is the change that actually mattered for real-time feel.
 pub fn model_path() -> PathBuf {
     if let Some(arg) = std::env::args().nth(1) {
         return PathBuf::from(arg);
@@ -164,7 +168,7 @@ pub fn model_path() -> PathBuf {
     if let Ok(env_path) = std::env::var("DICTATION_MODEL_PATH") {
         return PathBuf::from(env_path);
     }
-    PathBuf::from("models/ggml-small.en-q5_1.bin")
+    PathBuf::from("models/ggml-distil-small.en.bin")
 }
 
 /// VAD model path: `DICTATION_VAD_MODEL_PATH`, then the default fetched by

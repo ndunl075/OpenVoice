@@ -291,9 +291,9 @@ impl Engine {
         );
 
         let hotkey_config = MultiHotkeyConfig::default();
+        let (ptt_a, ptt_b) = hotkey_config.push_to_talk_keys;
         print(&format!(
-            "Hold {:?} to dictate (push-to-talk); release to insert at the cursor.",
-            hotkey_config.push_to_talk_key
+            "Hold {ptt_a:?} + {ptt_b:?} together to dictate (push-to-talk); release either to insert at the cursor."
         ));
         print(&format!(
             "Tap {:?} to toggle hands-free mode (VAD silence commits each utterance).",

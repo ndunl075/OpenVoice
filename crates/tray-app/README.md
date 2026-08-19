@@ -46,7 +46,9 @@ console in a normal launch.
 
 ## Controls
 
-- Hold Right Ctrl: push-to-talk (same as the console binary).
+- Hold Left Ctrl + Left Shift together: push-to-talk (same as the
+  console binary). A two-key chord on purpose -- unlike a single modifier
+  key, it can't be triggered by accident.
 - Tap AltGr: toggle hands-free mode, from the keyboard or the tray menu
   -- both send the identical control event, so there's no separate
   "UI-triggered" behavior to keep in sync with the hotkey path.

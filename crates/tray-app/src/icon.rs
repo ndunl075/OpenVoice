@@ -102,44 +102,46 @@ fn draw_mic_glyph(buf: &mut [u8], size: u32, color: [u8; 4]) {
 /// Tray icon background color for each pipeline state -- lets the mode be
 /// visible at a glance without opening the pill. Fully opaque; the mic
 /// glyph itself is always [`GLYPH_COLOR`] for contrast against any of
-/// these. Warm palette (golds, terracotta, sage) rather than the
-/// cool slate/blue/red of a typical dark "engineering tool" look --
-/// see `crates/tray-app/README.md` for the OpenNote-inspired direction
-/// this and the pill (`app.rs`) both follow.
+/// these. Light, cream-and-lavender palette: a pale cream background
+/// (not dark -- an earlier pass here guessed dark from a text-only page
+/// summary and got it wrong; corrected once real screenshots were
+/// available, see `crates/tray-app/README.md`) with one clear accent
+/// color per state, plus a soft lavender for the "actively listening"
+/// state specifically because that's the accent color dictation peers in
+/// this space use for their own primary call-to-action.
 pub fn state_background_rgba(status: &daemon::PipelineStatus) -> [u8; 4] {
     use daemon::PipelineStatus::*;
     match status {
-        Ready { .. } => WARM_NEUTRAL,
-        Recording => TERRACOTTA,
-        Listening => GOLDEN_AMBER,
-        Transcribing => MUSTARD,
-        Inserted(_) => SAGE,
-        HeardNothing => WARM_NEUTRAL,
-        HandsFreeOn => GOLDEN_AMBER,
-        HandsFreeOff => WARM_NEUTRAL,
-        Warning(_) => RUST,
+        Ready { .. } => NEUTRAL,
+        Recording => RECORDING,
+        Listening => LAVENDER,
+        Transcribing => THINKING,
+        Inserted(_) => SUCCESS,
+        HeardNothing => NEUTRAL,
+        HandsFreeOn => LAVENDER,
+        HandsFreeOff => NEUTRAL,
+        Warning(_) => WARNING,
     }
 }
 
 // pub(crate): app.rs's pill reuses these directly so the tray icon and
 // the pill are never one state-color edit away from disagreeing with
 // each other.
-pub(crate) const WARM_NEUTRAL: [u8; 4] = [196, 176, 145, 255]; // sand/taupe: idle, resting
-pub(crate) const TERRACOTTA: [u8; 4] = [224, 122, 95, 255]; // actively recording
-pub(crate) const GOLDEN_AMBER: [u8; 4] = [232, 180, 84, 255]; // hands-free listening
-pub(crate) const MUSTARD: [u8; 4] = [212, 160, 60, 255]; // thinking / transcribing
-pub(crate) const SAGE: [u8; 4] = [139, 163, 120, 255]; // success / just inserted
-pub(crate) const RUST: [u8; 4] = [196, 90, 74, 255]; // warning
-/// Warm cream, for the pill's own background (`app.rs`) -- deliberately
-/// close to but distinct from [`GLYPH_COLOR`] so a glyph drawn in it
-/// would still be very faintly legible rather than truly invisible.
-pub(crate) const CREAM_BACKGROUND: [u8; 4] = [250, 242, 227, 255];
-/// Warm dark brown, for text against [`CREAM_BACKGROUND`].
-pub(crate) const WARM_TEXT: [u8; 4] = [74, 58, 45, 255];
+pub(crate) const NEUTRAL: [u8; 4] = [150, 145, 130, 255]; // idle, resting
+pub(crate) const RECORDING: [u8; 4] = [224, 108, 92, 255]; // actively recording -- warm coral-red
+pub(crate) const LAVENDER: [u8; 4] = [176, 155, 224, 255]; // hands-free listening / primary accent
+pub(crate) const THINKING: [u8; 4] = [224, 172, 68, 255]; // transcribing / cleaning up
+pub(crate) const SUCCESS: [u8; 4] = [122, 168, 116, 255]; // just inserted
+pub(crate) const WARNING: [u8; 4] = [199, 92, 74, 255]; // distinct from RECORDING's coral on purpose
+/// Pale cream, close to the warm off-white this whole category of app
+/// tends to use for its light surfaces.
+pub(crate) const CREAM_BACKGROUND: [u8; 4] = [247, 243, 224, 255];
+/// Near-black, for text against [`CREAM_BACKGROUND`].
+pub(crate) const DARK_TEXT: [u8; 4] = [30, 28, 24, 255];
 
-/// Warm cream (not stark cool white) for the mic glyph, against any
-/// background color above.
-pub const GLYPH_COLOR: [u8; 4] = [250, 244, 230, 255];
+/// Near-black, for the mic glyph itself against any (light) background
+/// color above.
+pub const GLYPH_COLOR: [u8; 4] = DARK_TEXT;
 
 #[cfg(test)]
 mod tests {
@@ -196,14 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn warm_text_has_real_contrast_against_the_cream_pill_background() {
+    fn dark_text_has_real_contrast_against_the_cream_pill_background() {
         // Not a full WCAG contrast-ratio check -- just a floor against
         // shipping near-invisible text if someone tweaks either color
         // later. Sum of per-channel difference is a cheap, good-enough
         // proxy for "these are clearly different tones."
         let diff: i32 = CREAM_BACKGROUND
             .iter()
-            .zip(WARM_TEXT.iter())
+            .zip(DARK_TEXT.iter())
             .take(3) // RGB only, ignore alpha
             .map(|(&a, &b)| (a as i32 - b as i32).abs())
             .sum();

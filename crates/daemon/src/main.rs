@@ -8,7 +8,7 @@
 use std::sync::mpsc;
 
 fn main() {
-    println!("Local Dictation Engine -- console mode");
+    println!("OpenVoice -- console mode");
 
     let engine = match daemon::Engine::load(|line| println!("{line}")) {
         Ok(engine) => engine,

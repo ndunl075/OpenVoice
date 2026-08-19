@@ -1,29 +1,32 @@
 # tray-app
 
-GUI front end: a system tray icon plus a small floating "recording pill"
-window, both driving the same `daemon::Engine` the console binary
-(`crates/daemon`) uses. No terminal window on launch.
+OpenVoice's GUI front end: a system tray icon plus a small floating
+"recording pill" window, both driving the same `daemon::Engine` the
+console binary (`crates/daemon`) uses. No terminal window on launch.
 
 ## What's here vs. what's original
 
-This crate's visual language (a minimal floating pill that appears while
-recording and briefly shows the result before fading, plus a tray icon)
-follows the pattern popularized by dictation apps like Wispr Flow. The
-**assets themselves are original**, not copied:
+This crate's *interaction pattern* (a minimal floating "bar" that appears
+while recording, runs through a listening -> cleaning up -> final flow,
+and fades after inserting text, plus a tray icon) follows the convention
+dictation apps like Wispr Flow popularized -- the same way most apps in a
+category share UI conventions without being copies of each other. The
+**assets themselves are original**, not copied from anyone:
 
 - [`icon.rs`](src/icon.rs) draws a simple circle-with-a-mic-glyph from
   scratch, in code -- there is no third-party logo file anywhere in this
   repo. The tray icon's background color changes with pipeline state
-  (idle/recording/listening/thinking/done) so the mode is visible at a
+  (idle/recording/listening/cleaning up/done) so the mode is visible at a
   glance.
 - The pill's colors, shape, and copy are original choices made for this
-  project, not extracted from or matching any specific product's design
-  files. The palette (cream background, warm brown text, gold/terracotta/
-  sage state colors, all in `icon.rs`) takes its general direction from
-  [opennote.com](https://www.opennote.com/)'s warm, approachable look --
-  a deliberate move away from the cooler dark-slate "engineering tool"
-  aesthetic most utilities default to -- without copying any of their
-  actual assets.
+  project: a pale cream capsule (`icon::CREAM_BACKGROUND`) with one clear
+  accent color per state -- coral while recording, lavender while
+  listening, gold while cleaning up, sage on success -- and near-black
+  text (`icon::DARK_TEXT`). Not extracted from any product's actual CSS
+  or asset files, which we don't have; loosely follows the light,
+  warm-cream surface this category of app tends to favor, with a
+  lavender accent for the "actively listening" state, going by what's
+  visible on public marketing pages.
 
 ## Running
 

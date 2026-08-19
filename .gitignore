@@ -15,3 +15,6 @@
 Thumbs.db
 .vscode/
 .idea/
+
+# Ad-hoc runtime logs from manually launching the built binaries.
+/*.log

@@ -23,20 +23,21 @@ pub enum HotkeySlot {
 pub struct MultiHotkeyConfig {
     /// Both keys must be held together for push-to-talk -- a two-key
     /// chord rather than one common modifier key, so it can't be tripped
-    /// by accident (e.g. bumping Right Ctrl while typing normally).
+    /// by accident (e.g. bumping Left Ctrl while typing normally).
     pub push_to_talk_keys: (HotkeyKey, HotkeyKey),
     pub hands_free_toggle_key: HotkeyKey,
 }
 
 impl Default for MultiHotkeyConfig {
-    /// Right Ctrl + Right Shift for push-to-talk: both reachable together
-    /// under the right pinky without looking, and not a chord any common
+    /// Left Ctrl + Left Shift for push-to-talk: both reachable together
+    /// under the left pinky without looking, and not a chord any common
     /// editor/OS shortcut uses. AltGr for the hands-free toggle --
     /// physically the right Alt key on most keyboard layouts, distinct
-    /// from plain `Alt` in rdev.
+    /// from plain `Alt` in rdev, and on the opposite side of the keyboard
+    /// from the push-to-talk chord so the two can't be confused.
     fn default() -> Self {
         Self {
-            push_to_talk_keys: (HotkeyKey::ControlRight, HotkeyKey::ShiftRight),
+            push_to_talk_keys: (HotkeyKey::ControlLeft, HotkeyKey::ShiftLeft),
             hands_free_toggle_key: HotkeyKey::AltGr,
         }
     }

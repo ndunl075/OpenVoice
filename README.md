@@ -52,10 +52,10 @@ cargo run -p daemon --release
 > its code, re-run `cargo build -p tray-app --release` and launch the
 > `.exe` again the same way.
 
-Hold Right Ctrl + Right Shift together to dictate, release either to insert
+Hold Left Ctrl + Left Shift together to dictate, release either to insert
 the transcribed text at the cursor -- or tap AltGr to switch to hands-free
 mode (see below). It's a two-key chord rather than one key on purpose: a
-single common modifier is easy to trip by accident (bumping Right Ctrl
+single common modifier is easy to trip by accident (bumping Left Ctrl
 while typing normally); a chord basically never happens unintentionally.
 As of v1, transcription streams continuously while the chord is held
 (rolling 3s windows, §2.3) instead of waiting for release -- only the
@@ -86,7 +86,7 @@ layouts) to toggle hands-free listening on. Instead of holding a key,
 Silero VAD's confirmed end-of-speech commits each utterance -- and the
 daemon immediately starts listening for the next one, so a whole
 dictation session can run without touching the keyboard between
-utterances. Tap AltGr again to stop. Push-to-talk (Right Ctrl + Right
+utterances. Tap AltGr again to stop. Push-to-talk (Left Ctrl + Left
 Shift) and hands-free are mutually exclusive: whichever session is
 active, the other mode's key is ignored until it ends.
 

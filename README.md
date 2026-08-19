@@ -5,12 +5,11 @@ after you stop talking, and no audio ever leaves the machine. Full design
 rationale lives in [`dictation-architecture.md`](dictation-architecture.md) —
 this README tracks what's actually built.
 
-(This repo's folder/remote is still named `wispr-flow-clone` from when it
-started as a personal architecture exercise -- the product itself is
-OpenVoice, an original tool in the same category, not a Wispr Flow
-reskin. Ask if you want the repo itself renamed too; that's a bigger,
-more disruptive change -- URLs, clone links -- than the code/branding
-changes here.)
+(The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
+clone URLs still redirect. The local working-copy folder on disk here
+is still named `wispr flow clone`; ask if you want that renamed too,
+since that one can disrupt an open editor/terminal mid-session in a way
+the GitHub-side rename doesn't.)
 
 ## Status
 

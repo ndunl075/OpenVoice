@@ -18,7 +18,12 @@ follows the pattern popularized by dictation apps like Wispr Flow. The
   glance.
 - The pill's colors, shape, and copy are original choices made for this
   project, not extracted from or matching any specific product's design
-  files.
+  files. The palette (cream background, warm brown text, gold/terracotta/
+  sage state colors, all in `icon.rs`) takes its general direction from
+  [opennote.com](https://www.opennote.com/)'s warm, approachable look --
+  a deliberate move away from the cooler dark-slate "engineering tool"
+  aesthetic most utilities default to -- without copying any of their
+  actual assets.
 
 ## Running
 

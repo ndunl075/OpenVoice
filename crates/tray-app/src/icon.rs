@@ -101,24 +101,45 @@ fn draw_mic_glyph(buf: &mut [u8], size: u32, color: [u8; 4]) {
 
 /// Tray icon background color for each pipeline state -- lets the mode be
 /// visible at a glance without opening the pill. Fully opaque; the mic
-/// glyph itself is always near-white for contrast against any of these.
+/// glyph itself is always [`GLYPH_COLOR`] for contrast against any of
+/// these. Warm palette (golds, terracotta, sage) rather than the
+/// cool slate/blue/red of a typical dark "engineering tool" look --
+/// see `crates/tray-app/README.md` for the OpenNote-inspired direction
+/// this and the pill (`app.rs`) both follow.
 pub fn state_background_rgba(status: &daemon::PipelineStatus) -> [u8; 4] {
     use daemon::PipelineStatus::*;
     match status {
-        Ready { .. } => [90, 90, 100, 255],       // neutral slate: idle
-        Recording => [220, 60, 60, 255],          // red: actively recording
-        Listening => [60, 130, 220, 255],         // blue: hands-free, waiting
-        Transcribing => [230, 170, 40, 255],       // amber: thinking
-        Inserted(_) => [60, 190, 110, 255],       // green: just inserted
-        HeardNothing => [90, 90, 100, 255],       // back to neutral
-        HandsFreeOn => [60, 130, 220, 255],
-        HandsFreeOff => [90, 90, 100, 255],
-        Warning(_) => [220, 60, 60, 255],
+        Ready { .. } => WARM_NEUTRAL,
+        Recording => TERRACOTTA,
+        Listening => GOLDEN_AMBER,
+        Transcribing => MUSTARD,
+        Inserted(_) => SAGE,
+        HeardNothing => WARM_NEUTRAL,
+        HandsFreeOn => GOLDEN_AMBER,
+        HandsFreeOff => WARM_NEUTRAL,
+        Warning(_) => RUST,
     }
 }
 
-/// Near-white, for the mic glyph itself against any background color above.
-pub const GLYPH_COLOR: [u8; 4] = [245, 245, 248, 255];
+// pub(crate): app.rs's pill reuses these directly so the tray icon and
+// the pill are never one state-color edit away from disagreeing with
+// each other.
+pub(crate) const WARM_NEUTRAL: [u8; 4] = [196, 176, 145, 255]; // sand/taupe: idle, resting
+pub(crate) const TERRACOTTA: [u8; 4] = [224, 122, 95, 255]; // actively recording
+pub(crate) const GOLDEN_AMBER: [u8; 4] = [232, 180, 84, 255]; // hands-free listening
+pub(crate) const MUSTARD: [u8; 4] = [212, 160, 60, 255]; // thinking / transcribing
+pub(crate) const SAGE: [u8; 4] = [139, 163, 120, 255]; // success / just inserted
+pub(crate) const RUST: [u8; 4] = [196, 90, 74, 255]; // warning
+/// Warm cream, for the pill's own background (`app.rs`) -- deliberately
+/// close to but distinct from [`GLYPH_COLOR`] so a glyph drawn in it
+/// would still be very faintly legible rather than truly invisible.
+pub(crate) const CREAM_BACKGROUND: [u8; 4] = [250, 242, 227, 255];
+/// Warm dark brown, for text against [`CREAM_BACKGROUND`].
+pub(crate) const WARM_TEXT: [u8; 4] = [74, 58, 45, 255];
+
+/// Warm cream (not stark cool white) for the mic glyph, against any
+/// background color above.
+pub const GLYPH_COLOR: [u8; 4] = [250, 244, 230, 255];
 
 #[cfg(test)]
 mod tests {
@@ -172,5 +193,20 @@ mod tests {
         let idle = state_background_rgba(&daemon::PipelineStatus::HeardNothing);
         let recording = state_background_rgba(&daemon::PipelineStatus::Recording);
         assert_ne!(idle, recording);
+    }
+
+    #[test]
+    fn warm_text_has_real_contrast_against_the_cream_pill_background() {
+        // Not a full WCAG contrast-ratio check -- just a floor against
+        // shipping near-invisible text if someone tweaks either color
+        // later. Sum of per-channel difference is a cheap, good-enough
+        // proxy for "these are clearly different tones."
+        let diff: i32 = CREAM_BACKGROUND
+            .iter()
+            .zip(WARM_TEXT.iter())
+            .take(3) // RGB only, ignore alpha
+            .map(|(&a, &b)| (a as i32 - b as i32).abs())
+            .sum();
+        assert!(diff > 300, "text/background too close in tone: diff={diff}");
     }
 }

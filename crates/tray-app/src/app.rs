@@ -3,6 +3,13 @@
 //! Flow popularized for dictation apps (a minimal pill near the cursor
 //! that appears while recording and fades after inserting text), redrawn
 //! here from scratch with original colors/shapes, not their assets.
+//!
+//! Palette follows OpenNote's (opennote.com) warm, approachable direction
+//! -- cream background, warm brown text, golds/terracotta/sage for state
+//! -- instead of the cooler dark-slate "engineering tool" look most
+//! dictation-adjacent utilities default to. Same reasoning as the icon in
+//! `icon.rs`: the *shapes and colors* are original work inspired by that
+//! product's general aesthetic, not anything copied from it.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -141,26 +148,34 @@ impl eframe::App for PillApp {
 
         let (color, label) = match &self.display {
             Display::Hidden => return,
-            Display::Recording => (egui::Color32::from_rgb(220, 60, 60), "Recording…".to_string()),
-            Display::Listening => (egui::Color32::from_rgb(60, 130, 220), "Listening…".to_string()),
-            Display::Transcribing => (egui::Color32::from_rgb(230, 170, 40), "Thinking…".to_string()),
-            Display::Inserted { text, .. } => (egui::Color32::from_rgb(60, 190, 110), truncate(text, 60)),
-            Display::Warning { text, .. } => (egui::Color32::from_rgb(220, 60, 60), truncate(text, 60)),
+            Display::Recording => (rgba_to_color32(icon::TERRACOTTA), "Recording…".to_string()),
+            Display::Listening => (rgba_to_color32(icon::GOLDEN_AMBER), "Listening…".to_string()),
+            Display::Transcribing => (rgba_to_color32(icon::MUSTARD), "Thinking…".to_string()),
+            Display::Inserted { text, .. } => (rgba_to_color32(icon::SAGE), truncate(text, 60)),
+            Display::Warning { text, .. } => (rgba_to_color32(icon::RUST), truncate(text, 60)),
         };
 
+        // A true capsule, not just a rounded rect: corner radius = half
+        // the pill's fixed height (see main.rs's viewport inner_size).
+        let corner_radius = 28;
+
         egui::Frame::new()
-            .fill(egui::Color32::from_rgba_unmultiplied(24, 24, 28, 235))
-            .corner_radius(egui::CornerRadius::same(20))
-            .inner_margin(egui::Margin::symmetric(14, 10))
+            .fill(rgba_to_color32(icon::CREAM_BACKGROUND))
+            .corner_radius(egui::CornerRadius::same(corner_radius))
+            .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, color);
-                    ui.add_space(4.0);
-                    ui.colored_label(egui::Color32::from_rgb(235, 235, 240), label);
+                    ui.add_space(6.0);
+                    ui.colored_label(rgba_to_color32(icon::WARM_TEXT), label);
                 });
             });
     }
+}
+
+fn rgba_to_color32(rgba: [u8; 4]) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3])
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -178,7 +193,7 @@ fn truncate(s: &str, max_chars: usize) -> String {
 /// mostly what shows up in alt-tab if it's ever visible unexpectedly.
 pub fn window_icon() -> egui::IconData {
     let size = 32;
-    let rgba = icon::render_mic_icon(size, [90, 90, 100, 255], icon::GLYPH_COLOR);
+    let rgba = icon::render_mic_icon(size, icon::WARM_NEUTRAL, icon::GLYPH_COLOR);
     egui::IconData {
         rgba,
         width: size,

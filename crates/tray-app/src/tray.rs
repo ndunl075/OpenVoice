@@ -9,6 +9,7 @@ use crate::icon;
 
 pub struct MenuIds {
     pub hands_free: MenuId,
+    pub settings: MenuId,
     pub quit: MenuId,
 }
 
@@ -26,14 +27,17 @@ pub enum TrayError {
 /// `PillApp::apply_status`).
 pub fn build(mic_name: &str) -> Result<(TrayIcon, MenuIds), TrayError> {
     let hands_free_item = MenuItem::new("Toggle Hands-Free", true, None);
+    let settings_item = MenuItem::new("Settings…", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let menu_ids = MenuIds {
         hands_free: hands_free_item.id().clone(),
+        settings: settings_item.id().clone(),
         quit: quit_item.id().clone(),
     };
 
     let menu = Menu::new();
     menu.append(&hands_free_item)?;
+    menu.append(&settings_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&quit_item)?;
 

@@ -23,7 +23,8 @@
 //! real hotkey listener uses internally.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use hotkey::{HotkeyEvent, HotkeySlot, MultiHotkeyConfig};
@@ -40,6 +41,17 @@ pub const PRE_ROLL_DURATION: Duration = Duration::from_millis(500);
 /// available for decode close to the moment its last sample lands, large
 /// enough not to spin the loop pointlessly.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How often the push-to-talk watchdog cross-checks real OS key state
+/// against the event-driven `ChordDetector`'s idea of whether the chord
+/// is still held. See [`hotkey::is_physically_down`]'s doc comment for
+/// the real, reported bug this exists to catch: a Windows global-hook
+/// limitation can silently drop a `KeyRelease` event, which without this
+/// leaves a session stuck open until the *next* physical press --
+/// looking exactly like push-to-talk had turned into a toggle. Small
+/// enough that the extra latency in the rare case this actually fires is
+/// barely noticeable; large enough not to spin a thread pointlessly.
+const PTT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -86,6 +98,11 @@ pub enum ControlEvent {
     /// Only the press edge of the hands-free toggle key matters -- it's a
     /// toggle, not a hold, so its release is never forwarded.
     HandsFreeTogglePressed,
+    /// From the settings window's checkbox -- not reachable from a
+    /// physical hotkey. Runtime-only: doesn't unload/reload the cleanup
+    /// model (§2.4), just whether [`finish_utterance`] is allowed to use
+    /// it for the next utterance onward.
+    SetCleanupEnabled(bool),
     /// Ends [`Engine::run`]'s loop. Not reachable from a physical hotkey;
     /// only a GUI's "quit" action sends this.
     Quit,
@@ -214,6 +231,11 @@ pub struct Engine {
     tx: mpsc::Sender<ControlEvent>,
     rx: mpsc::Receiver<ControlEvent>,
     mic_name: String,
+    /// Set while a push-to-talk session is open; the watchdog thread
+    /// spawned in [`load`](Self::load) reads it to know when it should
+    /// bother cross-checking real key state at all. See
+    /// [`PTT_WATCHDOG_INTERVAL`].
+    ptt_active: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -327,6 +349,31 @@ impl Engine {
             }
         });
 
+        // Watchdog: see PTT_WATCHDOG_INTERVAL's doc comment. Only ever
+        // *forces* a release (by injecting the same ControlEvent a real
+        // KeyRelease would produce) when it's actively told a session is
+        // open and the OS says the chord's keys are no longer both
+        // down -- never fabricates a press, never fires while
+        // ptt_active is false, so it's a no-op unless the event stream
+        // actually missed something.
+        let ptt_active = Arc::new(AtomicBool::new(false));
+        {
+            let ptt_active = ptt_active.clone();
+            let ptt_keys = hotkey_config.push_to_talk_keys;
+            let watchdog_tx = tx.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(PTT_WATCHDOG_INTERVAL);
+                if ptt_active.load(Ordering::Relaxed) && !hotkey::both_physically_down(ptt_keys.0, ptt_keys.1) {
+                    let _ = watchdog_tx.send(ControlEvent::PushToTalkReleased);
+                    // run()'s handler for that event clears this too once
+                    // it actually processes the release; clearing it here
+                    // as well just avoids re-sending every tick in the
+                    // (very short) window before it does.
+                    ptt_active.store(false, Ordering::Relaxed);
+                }
+            });
+        }
+
         Ok(Self {
             ring,
             transcriber,
@@ -338,6 +385,7 @@ impl Engine {
             tx,
             rx,
             mic_name,
+            ptt_active,
         })
     }
 
@@ -376,6 +424,11 @@ impl Engine {
         let mut endpointer = vad::Endpointer::new(vad::EndpointConfig::default());
         let mut session: Option<Session> = None;
         let mut hands_free_active = false;
+        // Settings-window toggle (SetCleanupEnabled); starts true iff a
+        // cleanup model actually loaded -- flipping it doesn't
+        // unload/reload the model, just whether finish_utterance is
+        // allowed to reach for it.
+        let mut cleanup_runtime_enabled = self.cleanup.is_some();
 
         loop {
             let event = if session.is_some() {
@@ -400,6 +453,7 @@ impl Engine {
                     self.vad.reset_state();
                     endpointer.reset();
                     session = Some(Session::start(&self.ring, SessionMode::PushToTalk));
+                    self.ptt_active.store(true, Ordering::Relaxed);
                     println!("Recording... (with {PRE_ROLL_DURATION:?} pre-roll)");
                     let _ = status_tx.send(PipelineStatus::Recording);
                 }
@@ -415,7 +469,18 @@ impl Engine {
                         session = Some(s);
                         continue;
                     }
-                    self.commit_utterance(&window_policy, &mut s, &status_tx);
+                    // Real key release or the watchdog's synthesized one
+                    // (see PTT_WATCHDOG_INTERVAL) -- either way, the
+                    // session is ending now.
+                    self.ptt_active.store(false, Ordering::Relaxed);
+                    self.commit_utterance(&window_policy, &mut s, &status_tx, cleanup_runtime_enabled);
+                }
+                Some(ControlEvent::SetCleanupEnabled(enabled)) => {
+                    cleanup_runtime_enabled = enabled && self.cleanup.is_some();
+                    println!(
+                        "Cleanup pass: {}",
+                        if cleanup_runtime_enabled { "ON" } else { "OFF" }
+                    );
                 }
                 Some(ControlEvent::HandsFreeTogglePressed) => {
                     hands_free_active = !hands_free_active;
@@ -434,7 +499,7 @@ impl Engine {
                         let _ = status_tx.send(PipelineStatus::HandsFreeOff);
                         if let Some(mut s) = session.take() {
                             if s.mode == SessionMode::HandsFree {
-                                self.commit_utterance(&window_policy, &mut s, &status_tx);
+                                self.commit_utterance(&window_policy, &mut s, &status_tx, cleanup_runtime_enabled);
                             } else {
                                 session = Some(s); // leave an unrelated push-to-talk session alone
                             }
@@ -465,7 +530,7 @@ impl Engine {
                         s.mode == SessionMode::HandsFree && vad_event == Some(vad::EndpointEvent::SpeechEnd);
                     if hands_free_speech_ended {
                         let mut finished = session.take().expect("checked Some above");
-                        self.commit_utterance(&window_policy, &mut finished, &status_tx);
+                        self.commit_utterance(&window_policy, &mut finished, &status_tx, cleanup_runtime_enabled);
                         // Hands-free keeps listening: immediately start
                         // the next utterance's session rather than
                         // waiting for another toggle press.
@@ -489,13 +554,17 @@ impl Engine {
         window_policy: &asr::WindowPolicy,
         session: &mut Session,
         status_tx: &mpsc::Sender<PipelineStatus>,
+        cleanup_runtime_enabled: bool,
     ) {
         let _ = status_tx.send(PipelineStatus::Transcribing);
         let audio = session_audio(&self.ring, session);
         if let Some((start, end)) = window_policy.final_window(audio.len(), session.windows_decoded) {
             decode_window(&self.transcriber, &audio[start..end], &mut session.committed);
         }
-        finish_utterance(&session.committed, self.cleanup.as_ref(), &mut self.injector, status_tx);
+        // Settings-window toggle: skip reaching for the model at all
+        // when it's off, same as if none had ever loaded.
+        let cleanup = cleanup_runtime_enabled.then_some(self.cleanup.as_ref()).flatten();
+        finish_utterance(&session.committed, cleanup, &mut self.injector, status_tx);
     }
 }
 

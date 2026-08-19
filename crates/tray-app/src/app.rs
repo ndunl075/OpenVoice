@@ -53,6 +53,21 @@ pub struct PillApp {
     // Also repainted per state change (see `apply_status`) so the icon
     // itself reflects idle/recording/etc. without opening the pill.
     tray_icon: tray_icon::TrayIcon,
+    // Static config, known at startup and shown read-only in the settings
+    // window -- see draw_settings_window. Not expected to change without
+    // a restart (remapping hotkeys live is a bigger feature -- see that
+    // function's doc comment).
+    mic_name: String,
+    hotkey_config: hotkey::MultiHotkeyConfig,
+    // Whether a cleanup model actually loaded at startup (from
+    // PipelineStatus::Ready) -- the settings checkbox is disabled
+    // entirely if not, since there's nothing to toggle.
+    cleanup_model_loaded: bool,
+    // The live runtime toggle -- starts equal to `cleanup_model_loaded`,
+    // flips on the settings checkbox, and is what's actually sent as
+    // ControlEvent::SetCleanupEnabled.
+    cleanup_enabled: bool,
+    show_settings: bool,
 }
 
 impl PillApp {
@@ -61,6 +76,8 @@ impl PillApp {
         control_tx: mpsc::Sender<daemon::ControlEvent>,
         tray_icon: tray_icon::TrayIcon,
         menu_ids: crate::tray::MenuIds,
+        mic_name: String,
+        hotkey_config: hotkey::MultiHotkeyConfig,
     ) -> Self {
         Self {
             status_rx,
@@ -69,6 +86,11 @@ impl PillApp {
             display: Display::Hidden,
             hands_free_on: false,
             tray_icon,
+            mic_name,
+            hotkey_config,
+            cleanup_model_loaded: false,
+            cleanup_enabled: false,
+            show_settings: false,
         }
     }
 
@@ -76,7 +98,11 @@ impl PillApp {
         use daemon::PipelineStatus as S;
         let _ = self.tray_icon.set_icon(Some(crate::tray::icon_for_status(&status)));
         match status {
-            S::Ready { .. } => self.display = Display::Hidden,
+            S::Ready { cleanup_enabled, .. } => {
+                self.cleanup_model_loaded = cleanup_enabled;
+                self.cleanup_enabled = cleanup_enabled;
+                self.display = Display::Hidden;
+            }
             S::Recording => self.display = Display::Recording,
             S::Listening => self.display = Display::Listening,
             S::Transcribing => self.display = Display::Transcribing,
@@ -112,6 +138,8 @@ impl PillApp {
         while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
             if event.id() == &self.menu_ids.hands_free {
                 let _ = self.control_tx.send(daemon::ControlEvent::HandsFreeTogglePressed);
+            } else if event.id() == &self.menu_ids.settings {
+                self.show_settings = true;
             } else if event.id() == &self.menu_ids.quit {
                 self.quit();
             }
@@ -143,6 +171,62 @@ impl PillApp {
             };
         }
     }
+
+    /// The "desktop app... where u can adjust settings" -- a real
+    /// decorated, resizable-in-the-taskbar OS window (unlike the pill,
+    /// which is deliberately chrome-less), opened from the tray menu's
+    /// "Settings…" item. First cut: read-only config display (mic,
+    /// hotkeys) plus the one setting that's actually adjustable so far
+    /// -- the cleanup pass. Hotkey remapping would need a "press keys to
+    /// set" capture flow, conflict checking, and persisting the result
+    /// to disk -- a bigger feature than this pass; keys are shown
+    /// read-only for now.
+    fn draw_settings_window(&mut self, ctx: &egui::Context) {
+        let mut close_requested = false;
+        let mut quit_requested = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("openvoice-settings"),
+            egui::ViewportBuilder::default()
+                .with_title("OpenVoice Settings")
+                .with_inner_size([380.0, 260.0])
+                .with_resizable(false),
+            |settings_ui, _class| {
+                settings_ui.heading("OpenVoice");
+                settings_ui.add_space(4.0);
+                settings_ui.label(format!("Microphone: {}", self.mic_name));
+                let (ptt_a, ptt_b) = self.hotkey_config.push_to_talk_keys;
+                settings_ui.label(format!("Push-to-talk: hold {ptt_a:?} + {ptt_b:?}"));
+                settings_ui.label(format!("Hands-free: tap {:?} to toggle", self.hotkey_config.hands_free_toggle_key));
+                settings_ui.separator();
+                settings_ui.add_enabled_ui(self.cleanup_model_loaded, |ui| {
+                    let mut enabled = self.cleanup_enabled;
+                    if ui
+                        .checkbox(&mut enabled, "Clean up disfluencies (\"um\", false starts) before inserting")
+                        .changed()
+                    {
+                        self.cleanup_enabled = enabled;
+                        let _ = self.control_tx.send(daemon::ControlEvent::SetCleanupEnabled(enabled));
+                    }
+                });
+                if !self.cleanup_model_loaded {
+                    settings_ui.label(egui::RichText::new("(no cleanup model loaded -- nothing to toggle)").weak());
+                }
+                settings_ui.separator();
+                if settings_ui.button("Quit OpenVoice").clicked() {
+                    quit_requested = true;
+                }
+                if settings_ui.ctx().input(|i| i.viewport().close_requested()) {
+                    close_requested = true;
+                }
+            },
+        );
+        if quit_requested {
+            self.quit();
+        }
+        if close_requested {
+            self.show_settings = false;
+        }
+    }
 }
 
 impl eframe::App for PillApp {
@@ -157,6 +241,9 @@ impl eframe::App for PillApp {
         self.expire_flash();
 
         let ctx = ui.ctx().clone();
+        if self.show_settings {
+            self.draw_settings_window(&ctx);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!matches!(self.display, Display::Hidden)));
 
         // Both "mic is actually live" states read as "Listening…" -- from

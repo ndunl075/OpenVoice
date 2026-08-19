@@ -40,6 +40,7 @@ fn main() {
     };
 
     let mic_name = engine.mic_name().to_string();
+    let hotkey_config = engine.hotkey_config();
     let control_tx = engine.control_sender();
 
     let (tray_icon, menu_ids) = match tray::build(&mic_name) {
@@ -72,7 +73,16 @@ fn main() {
     let result = eframe::run_native(
         APP_NAME,
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app::PillApp::new(status_rx, control_tx, tray_icon, menu_ids)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(app::PillApp::new(
+                status_rx,
+                control_tx,
+                tray_icon,
+                menu_ids,
+                mic_name,
+                hotkey_config,
+            )))
+        }),
     );
 
     if let Err(e) = result {

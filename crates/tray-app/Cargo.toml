@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 daemon = { version = "0.1.0", path = "../daemon" }
+hotkey = { version = "0.1.0", path = "../hotkey" }
 eframe = "0.36.1"
 image = "0.25.10"
 thiserror = "2.0.20"

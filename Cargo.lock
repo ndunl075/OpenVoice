@@ -2282,6 +2282,7 @@ version = "0.1.0"
 dependencies = [
  "rdev",
  "thiserror 2.0.20",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -5010,6 +5011,7 @@ version = "0.1.0"
 dependencies = [
  "daemon",
  "eframe",
+ "hotkey",
  "image",
  "thiserror 2.0.20",
  "tray-icon",

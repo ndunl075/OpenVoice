@@ -7,3 +7,10 @@ license.workspace = true
 [dependencies]
 rdev = "0.5.3"
 thiserror = "2.0.20"
+
+[target.'cfg(windows)'.dependencies]
+# For GetAsyncKeyState in winkey.rs -- a real-time cross-check against
+# rdev's event stream, which a Windows global-hook limitation can
+# occasionally cause to drop a key release (see that module's doc
+# comment). Same crate/version tray-app already uses.
+windows = { version = "0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }

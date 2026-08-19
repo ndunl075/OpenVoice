@@ -161,9 +161,25 @@ impl Transcriber {
         // means "full 30s" regardless of input length). See audio_ctx.rs
         // for the ~11.7x measurement behind this.
         params.set_audio_ctx(audio_ctx::audio_ctx_for(sample_count, SAMPLE_RATE_HZ));
-        // No temperature-fallback decoding: fixed temperature, no retry ladder.
+        // Bug fix: this used to also call `set_temperature_inc(0.0)`,
+        // which fully disables whisper.cpp's temperature-fallback retry
+        // ladder -- the mechanism that re-decodes at a higher temperature
+        // when the greedy pass's own entropy/logprob checks say the
+        // result looks bad, instead of just accepting whatever garbage
+        // greedy produced. That's *the* built-in defense against
+        // hallucinated/repeated-word output on short, context-free
+        // (`no_context = true`) clips -- exactly what every rolling
+        // window here is. Turning it off traded "no unpredictable
+        // decode-time retries" for "confidently emits nonsense on
+        // ambiguous audio," which is a bad trade for a dictation tool.
+        // `temperature_inc = 0.2` restores whisper.cpp's own upstream
+        // default (entropy_thold/logprob_thold are already at their
+        // sane defaults from `whisper_full_default_params` above; we've
+        // never overridden those). The retry only fires on windows the
+        // model itself flags as low-confidence, so this shouldn't cost
+        // anything on the common case where the first pass was fine.
         params.set_temperature(0.0);
-        params.set_temperature_inc(0.0);
+        params.set_temperature_inc(0.2);
         if let Some(lang) = self.config.language.as_deref() {
             params.set_language(Some(lang));
         }

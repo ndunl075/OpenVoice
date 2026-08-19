@@ -77,15 +77,28 @@ impl AsrConfig {
     }
 }
 
-/// `min(available_parallelism, 4)`, clamped to at least 1. whisper.cpp's
-/// own default is `min(4, hardware_concurrency)`; matching it explicitly
-/// here means the daemon's thread budget is visible and overridable rather
-/// than implicit in a C default.
+/// `available_parallelism / 2`, clamped to `[1, 8]`.
+///
+/// This used to just match whisper.cpp's own upstream default of
+/// `min(4, hardware_concurrency)` -- reasonable-sounding, but never
+/// actually benchmarked on this machine. It wasn't: real measurement
+/// (`crates/asr/tests/real_time_factor.rs`, run with
+/// `ASR_BENCH_MODEL_A=... cargo test --release -p asr --test
+/// real_time_factor -- --ignored --nocapture`) on a 16-logical-core
+/// machine found 4 threads decoding at ~1.1-1.2x real-time (i.e.
+/// *slower* than the audio itself -- the streaming pipeline can't keep
+/// up), 8 threads at ~0.8x (comfortably real-time), and going all the
+/// way to 16 threads catastrophically regressing to 10-25x real-time --
+/// almost certainly thread-pool/scheduling contention once you cross
+/// from physical into hyperthreaded cores. So: more isn't always
+/// better, but 4 was leaving real, free speed on the table. Halving
+/// `available_parallelism` is a rough physical-core estimate on typical
+/// 2-way-SMT hardware without hardcoding a number that's wrong on a
+/// machine with a different core count; the `[1, 8]` clamp keeps it
+/// from ever wandering back into the regime that regressed at 16.
 pub fn default_thread_count() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .clamp(1, 4)
+    let available = std::thread::available_parallelism().map(|n| n.get() as i32).unwrap_or(4);
+    (available / 2).clamp(1, 8)
 }
 
 /// A loaded whisper.cpp model, ready to transcribe. Expensive to construct

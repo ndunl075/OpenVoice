@@ -27,6 +27,12 @@ const FLASH_DURATION: Duration = Duration::from_millis(1800);
 /// the pill never visibly lags a real state change.
 const REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 
+/// While the level bars are animating (mic actively live -- recording or
+/// hands-free listening), repaint faster than [`REPAINT_INTERVAL`] so the
+/// motion actually reads as motion instead of a slideshow. Not used for
+/// idle/terminal states, which don't animate and don't need it.
+const ANIMATION_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
+
 #[derive(Clone)]
 enum Display {
     Hidden,
@@ -143,21 +149,24 @@ impl eframe::App for PillApp {
         self.expire_flash();
 
         let ctx = ui.ctx().clone();
-        ctx.request_repaint_after(REPAINT_INTERVAL);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!matches!(self.display, Display::Hidden)));
 
-        // Labels follow the listening -> cleaning up -> final flow common
-        // to this class of dictation app: raw speech first, then a
-        // "tidying up" beat while the cleanup pass (§2.4) races its
-        // deadline, then the committed result.
-        let (color, label) = match &self.display {
+        // Both "mic is actually live" states read as "Listening…" -- from
+        // the user's side, push-to-talk-held and hands-free-armed are the
+        // same thing (the mic is capturing right now), so the copy
+        // shouldn't imply a distinction they don't experience. The color
+        // still tells them apart (coral while a key is held, lavender for
+        // hands-free) and so does the bars/no-bars animation state.
+        let (color, label, animate) = match &self.display {
             Display::Hidden => return,
-            Display::Recording => (rgba_to_color32(icon::RECORDING), "Recording…".to_string()),
-            Display::Listening => (rgba_to_color32(icon::LAVENDER), "Listening…".to_string()),
-            Display::Transcribing => (rgba_to_color32(icon::THINKING), "Cleaning up…".to_string()),
-            Display::Inserted { text, .. } => (rgba_to_color32(icon::SUCCESS), truncate(text, 60)),
-            Display::Warning { text, .. } => (rgba_to_color32(icon::WARNING), truncate(text, 60)),
+            Display::Recording => (rgba_to_color32(icon::RECORDING), "Listening…".to_string(), true),
+            Display::Listening => (rgba_to_color32(icon::LAVENDER), "Listening…".to_string(), true),
+            Display::Transcribing => (rgba_to_color32(icon::THINKING), "Cleaning up…".to_string(), false),
+            Display::Inserted { text, .. } => (rgba_to_color32(icon::SUCCESS), truncate(text, 60), false),
+            Display::Warning { text, .. } => (rgba_to_color32(icon::WARNING), truncate(text, 60), false),
         };
+
+        ctx.request_repaint_after(if animate { ANIMATION_REPAINT_INTERVAL } else { REPAINT_INTERVAL });
 
         // A true capsule, not just a rounded rect: corner radius = half
         // the pill's fixed height (see main.rs's viewport inner_size).
@@ -169,12 +178,59 @@ impl eframe::App for PillApp {
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 5.0, color);
+                    draw_level_bars(ui, color, animate);
                     ui.add_space(6.0);
                     ui.colored_label(rgba_to_color32(icon::DARK_TEXT), label);
                 });
             });
+    }
+}
+
+/// A small vertical-bar level meter -- the "equalizer bars" visual
+/// convention practically every voice-input UI uses to show a live mic
+/// (Siri, Google Assistant, Wispr Flow's own bar all draw on the same
+/// genre convention; it's not any one product's invention, same as a red
+/// dot for "recording" isn't). Replaces the plain colored dot this pill
+/// used to show.
+///
+/// `animate` drives per-bar heights from wall-clock time with a phase
+/// offset per bar, so they move independently rather than in lockstep --
+/// when `false` (not actively listening), bars sit flat at their resting
+/// height instead, same shape either way so the layout never jumps.
+///
+/// This is a time-based approximation, not a real audio level meter: the
+/// pill doesn't currently see actual mic amplitude, only pipeline state
+/// over `PipelineStatus`. Wiring real per-frame RMS through would make
+/// this genuinely reactive to the user's voice instead of just "looks
+/// alive" -- a reasonable next step if it's worth the plumbing.
+fn draw_level_bars(ui: &mut egui::Ui, color: egui::Color32, animate: bool) {
+    const BAR_COUNT: usize = 4;
+    const BAR_WIDTH: f32 = 3.0;
+    const BAR_GAP: f32 = 3.0;
+    const MAX_HEIGHT: f32 = 16.0;
+    const MIN_HEIGHT: f32 = 4.0;
+    const CYCLES_PER_SECOND: f64 = 2.2;
+    const PHASE_STEP: f64 = 1.7; // desyncs bars so they don't move in lockstep
+
+    let total_width = BAR_COUNT as f32 * BAR_WIDTH + (BAR_COUNT as f32 - 1.0) * BAR_GAP;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_width, MAX_HEIGHT), egui::Sense::hover());
+    let t = ui.ctx().input(|i| i.time);
+    let painter = ui.painter();
+
+    for i in 0..BAR_COUNT {
+        let height = if animate {
+            let phase = i as f64 * PHASE_STEP;
+            let wave = ((t * std::f64::consts::TAU * CYCLES_PER_SECOND + phase).sin() * 0.5 + 0.5) as f32;
+            MIN_HEIGHT + wave * (MAX_HEIGHT - MIN_HEIGHT)
+        } else {
+            MIN_HEIGHT
+        };
+        let x = rect.left() + i as f32 * (BAR_WIDTH + BAR_GAP);
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(x, rect.center().y - height / 2.0),
+            egui::pos2(x + BAR_WIDTH, rect.center().y + height / 2.0),
+        );
+        painter.rect_filled(bar_rect, egui::CornerRadius::same(1), color);
     }
 }
 

@@ -1,13 +1,15 @@
 //! Rolling-window scheduling, kept pure and independent of whisper-rs so
 //! it's unit-testable without a model loaded.
 //!
-//! See `dictation-architecture.md` §2.3: "Rolling 3s windows with 0.5s
-//! overlap, decoded *while the user speaks*. At release, only the final
-//! partial window is outstanding." This is the actual latency win in the
-//! whole design (§1: "transcription should be nearly finished before the
-//! user stops talking") -- everything else in this crate just makes each
-//! individual decode fast; this is what makes most of the decoding happen
-//! before the user is even done.
+//! See `dictation-architecture.md` §2.3: "Rolling windows, decoded *while
+//! the user speaks*. At release, only the final partial window is
+//! outstanding." (The doc's illustrative numbers are 3s windows / 0.5s
+//! overlap; [`WindowPolicy::default_16k`] tunes tighter than that once
+//! decode speed allows -- see its doc comment.) This is the actual
+//! latency win in the whole design (§1: "transcription should be nearly
+//! finished before the user stops talking") -- everything else in this
+//! crate just makes each individual decode fast; this is what makes most
+//! of the decoding happen before the user is even done.
 
 use std::time::Duration;
 
@@ -29,9 +31,36 @@ impl WindowPolicy {
         }
     }
 
-    /// The doc's literal numbers: 3s windows, 0.5s overlap, at 16kHz.
+    /// 1.2s windows, 0.2s overlap (1.0s stride) at 16kHz -- tighter than
+    /// the doc's illustrative "3s windows, 0.5s overlap" example, and the
+    /// *overlap fraction* matters as much as the raw sizes here.
+    ///
+    /// Real measurement (`crates/asr/tests/real_time_factor.rs`) after the
+    /// `audio_ctx` fix and the thread-count fix (see
+    /// `asr::default_thread_count`'s doc comment) found `distil-small.en`
+    /// decoding at roughly 0.8x real-time on this machine -- i.e. an
+    /// N-second window takes about `0.8*N` seconds to decode. For
+    /// streaming to actually keep up with a long, continuous utterance
+    /// (not just look fine on short test clips), each window's decode
+    /// needs to finish *before* the next window's worth of new audio has
+    /// even arrived: `decode_time(window) < stride`, which with the 0.8x
+    /// figure means `overlap < ~0.2 * window`. The doc's illustrative 3s
+    /// window / 0.5s overlap (17%) is actually fine by that math, but an
+    /// earlier retune to 1.5s/0.5s (33%) was not -- it would silently
+    /// fall further behind over a long utterance, and since
+    /// [`final_window`](Self::final_window) covers *everything* not yet
+    /// windowed, that backlog would all land in the one decode call that
+    /// blocks hotkey-release-to-insert latency, defeating the entire
+    /// point of streaming ahead of time. 0.2/1.2 ≈ 17% leaves real
+    /// margin while still landing a 1.0s final-tail bound -- tighter
+    /// than the doc's 3s window would give.
+    ///
+    /// Caveat worth being honest about: the benchmark uses a synthetic
+    /// swept sine, not real speech -- token count (and so decode time)
+    /// can differ for real content. If it ever needs re-validating,
+    /// that's what the benchmark test is for; don't just eyeball it.
     pub fn default_16k() -> Self {
-        Self::new(16_000, Duration::from_millis(3000), Duration::from_millis(500))
+        Self::new(16_000, Duration::from_millis(1200), Duration::from_millis(200))
     }
 
     /// The `[start, end)` sample range of the next full window, if enough
@@ -67,10 +96,18 @@ mod tests {
     }
 
     #[test]
-    fn default_16k_matches_the_docs_numbers() {
+    fn default_16k_keeps_overlap_fraction_low_enough_to_sustain_real_time() {
         let p = WindowPolicy::default_16k();
-        assert_eq!(p.window_samples, 48_000); // 3s @ 16kHz
-        assert_eq!(p.stride_samples, 40_000); // (3s - 0.5s) @ 16kHz
+        assert_eq!(p.window_samples, 19_200); // 1.2s @ 16kHz
+        assert_eq!(p.stride_samples, 16_000); // (1.2s - 0.2s) @ 16kHz -- the final-tail bound
+        // The condition this whole tuning exists to satisfy: overlap
+        // stays under ~20% of the window (see the doc comment above for
+        // the 0.8x-real-time measurement this threshold comes from).
+        let overlap_samples = p.window_samples - p.stride_samples;
+        assert!(
+            (overlap_samples as f64) < 0.2 * p.window_samples as f64,
+            "overlap fraction too high to sustain real-time decode"
+        );
     }
 
     #[test]

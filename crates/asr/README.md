@@ -21,6 +21,24 @@ If dictation ever feels slow again, benchmark before guessing why -- see
 sitting in it for a while because nobody had actually timed a real decode
 call until asked to.
 
+## Performance: thread count wasn't actually tuned either
+
+[`default_thread_count`](src/lib.rs) used to just mirror whisper.cpp's own
+upstream default (`min(4, hardware_concurrency)`) -- a reasonable-sounding
+number nobody had actually benchmarked *on this machine*. Turns out it
+mattered: on a 16-logical-core machine, `real_time_factor.rs` (see
+"Benchmarking") measured `distil-small.en` decoding at ~1.1-1.3x
+real-time at 4 threads -- i.e. genuinely *slower than the audio itself*,
+which means the whole streaming design (§2.3: "transcription should be
+nearly finished before the user stops talking") can't keep its promise no
+matter how the windows are scheduled. At 8 threads: ~0.8x, comfortably
+real-time. At 16 (all logical cores): catastrophically *worse* -- 10-25x
+real-time, almost certainly thread-pool/scheduling contention once you
+cross from physical into hyperthreaded cores. More threads is not
+monotonically better; `default_thread_count` now targets roughly the
+physical core count (`available_parallelism / 2`, clamped to `[1, 8]`)
+instead of either extreme.
+
 ## Fetching a model
 
 Model weights aren't checked into the repo (see the root `.gitignore`) --
@@ -52,7 +70,7 @@ whichever `.bin` you fetched (or set `DICTATION_MODEL_PATH`).
 
 ## Benchmarking
 
-Two `#[ignore]`d integration tests exist specifically so "is this slow?"
+Three `#[ignore]`d integration tests exist specifically so "is this slow?"
 never has to be answered by guessing again:
 
 ```sh
@@ -64,7 +82,20 @@ cargo test --release -p asr --test model_benchmark -- --ignored --nocapture
 # Confirm audio_ctx scoping is actually helping on your hardware
 ASR_BENCH_MODEL_A=models/ggml-small.en-q5_1.bin \
 cargo test --release -p asr --test audio_ctx_experiment -- --ignored --nocapture
+
+# Real-time factor per WindowPolicy-sized window, swept across thread
+# counts -- the tool that found the thread-count and overlap-fraction
+# issues above. Use this one first if streaming feels behind real-time.
+ASR_BENCH_MODEL_A=models/ggml-distil-small.en.bin \
+cargo test --release -p asr --test real_time_factor -- --ignored --nocapture
 ```
+
+The synthetic swept-sine signal these use is a real caveat, not a
+formality: it exercises real encoder+decoder compute, but token count
+(and so decode time) can genuinely differ for real speech content. Numbers
+here are a strong signal, not a guarantee -- if streaming still feels off
+after tuning against them, that's worth re-checking against an actual
+recording.
 
 Not run in CI (they need local model files and are meant for a human to
 read the numbers), and use `--release` -- debug-profile whisper.cpp is

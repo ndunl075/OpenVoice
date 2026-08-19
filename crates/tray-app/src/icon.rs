@@ -128,7 +128,18 @@ pub fn state_background_rgba(status: &daemon::PipelineStatus) -> [u8; 4] {
 // the pill are never one state-color edit away from disagreeing with
 // each other.
 pub(crate) const NEUTRAL: [u8; 4] = [150, 145, 130, 255]; // idle, resting
-pub(crate) const RECORDING: [u8; 4] = [224, 108, 92, 255]; // actively recording -- warm coral-red
+pub(crate) const RECORDING: [u8; 4] = [224, 108, 92, 255]; // tray badge only now, see LISTENING_ACTIVE
+/// The pill's bar color while push-to-talk is actively held. Deliberately
+/// *not* [`RECORDING`] -- feedback was that a red/coral indicator reads
+/// as "error" or "something's wrong," not "the mic is listening to you."
+/// Near-black instead, close to [`DARK_TEXT`] but kept as its own
+/// constant (rather than reusing `DARK_TEXT` directly) so the pill's bar
+/// color and its text color can diverge later without one edit
+/// accidentally meaning two different things. [`RECORDING`] still backs
+/// the tray icon's badge -- that needs a color the [`GLYPH_COLOR`]
+/// (also near-black) mic glyph stays visible against, so it can't also
+/// go near-black the way the pill's bars just did.
+pub(crate) const LISTENING_ACTIVE: [u8; 4] = [26, 24, 21, 255];
 pub(crate) const LAVENDER: [u8; 4] = [176, 155, 224, 255]; // hands-free listening / primary accent
 pub(crate) const THINKING: [u8; 4] = [224, 172, 68, 255]; // transcribing / cleaning up
 pub(crate) const SUCCESS: [u8; 4] = [122, 168, 116, 255]; // just inserted

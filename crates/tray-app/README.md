@@ -20,13 +20,22 @@ category share UI conventions without being copies of each other. The
   glance.
 - The pill's colors, shape, and copy are original choices made for this
   project: a pale cream capsule (`icon::CREAM_BACKGROUND`) with one clear
-  accent color per state -- coral while recording, lavender while
-  listening, gold while cleaning up, sage on success -- and near-black
-  text (`icon::DARK_TEXT`). Not extracted from any product's actual CSS
-  or asset files, which we don't have; loosely follows the light,
-  warm-cream surface this category of app tends to favor, with a
-  lavender accent for the "actively listening" state, going by what's
-  visible on public marketing pages.
+  accent color per state -- coral while push-to-talk is held, lavender
+  while hands-free is listening, gold while cleaning up, sage on success
+  -- and near-black text (`icon::DARK_TEXT`). Not extracted from any
+  product's actual CSS or asset files, which we don't have; loosely
+  follows the light, warm-cream surface this category of app tends to
+  favor, with a lavender accent for the "actively listening" state, going
+  by what's visible on public marketing pages. Both "mic is live" states
+  (push-to-talk held, hands-free armed) read as "Listening…" in the copy
+  -- the color, not the words, is what tells them apart -- with an
+  animated vertical-bar level meter (`app.rs`'s `draw_level_bars`)
+  instead of a plain dot. That's a genre convention (Siri, Google
+  Assistant, and Wispr Flow's own bar all draw on the same "equalizer
+  bars mean the mic is live" idea), not any one product's invention; it's
+  currently a time-based animation, not driven by real mic amplitude --
+  see that function's doc comment for what wiring up genuine audio-level
+  reactivity would take.
 
 ## Running
 

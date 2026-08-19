@@ -5,12 +5,11 @@ after you stop talking, and no audio ever leaves the machine. Full design
 rationale lives in [`dictation-architecture.md`](dictation-architecture.md) —
 this README tracks what's actually built.
 
-(This repo's folder/remote is still named `wispr-flow-clone` from when it
-started as a personal architecture exercise -- the product itself is
-OpenVoice, an original tool in the same category, not a Wispr Flow
-reskin. Ask if you want the repo itself renamed too; that's a bigger,
-more disruptive change -- URLs, clone links -- than the code/branding
-changes here.)
+(The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
+clone URLs still redirect. The local working-copy folder on disk here
+is still named `wispr flow clone`; ask if you want that renamed too,
+since that one can disrupt an open editor/terminal mid-session in a way
+the GitHub-side rename doesn't.)
 
 ## Status
 
@@ -65,8 +64,11 @@ mode (see below). It's a two-key chord rather than one key on purpose: a
 single common modifier is easy to trip by accident (bumping Left Ctrl
 while typing normally); a chord basically never happens unintentionally.
 As of v1, transcription streams continuously while the chord is held
-(rolling 3s windows, §2.3) instead of waiting for release -- only the
-trailing partial window is left to decode at that point. The ASR model path
+(rolling windows, §2.3 -- 1.2s with 0.2s overlap; see
+`crates/asr/src/window.rs` for why that specific overlap fraction, not
+just the sizes, is what keeps streaming from falling behind real-time)
+instead of waiting for release -- only the trailing ~1s partial window is
+left to decode at that point. The ASR model path
 defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
@@ -101,33 +103,53 @@ active, the other mode's key is ignored until it ends.
 gives you a system tray icon -- an original mic glyph, not a copy of any
 product's logo, whose background color reflects pipeline state at a
 glance -- plus a small floating pill near the bottom of the screen that
-appears while recording/listening/thinking and briefly shows the result
-before fading. The architecture doc calls a visible indicator out as
-necessary before an always-on mic is trustworthy to ship publicly (see
-"Honest risks" in `dictation-architecture.md`); this is that. The
-console binary (`daemon`) still exists and still just prints to stdout,
-for headless/debugging use -- `tray-app` is the one with an actual UI.
+appears while the mic is live or the pipeline is working, and briefly
+shows the result before fading. Push-to-talk-held and hands-free-armed
+both read as "Listening…" (color still tells them apart -- coral for a
+held key, lavender for hands-free) with an animated vertical-bar level
+meter, the same genre convention most voice-input UIs use for "mic is
+live right now"; "Cleaning up…" covers the deadlined cleanup pass. The
+architecture doc calls a visible indicator out as necessary before an
+always-on mic is trustworthy to ship publicly (see "Honest risks" in
+`dictation-architecture.md`); this is that. The console binary (`daemon`)
+still exists and still just prints to stdout, for headless/debugging use
+-- `tray-app` is the one with an actual UI.
 
 ## Performance: why decoding used to be so slow
 
 Real talk: for a while, actual transcription was badly slow -- multiple
 *seconds* per short window, not the sub-200ms this whole project is
-about. Root cause, found by actually benchmarking instead of guessing:
-whisper.cpp's `audio_ctx` decode parameter defaults to "encode a full
-30-second context," no matter how much audio you actually hand it. Every
-decode call was paying for 30 seconds of encoder compute even on a
-1-3 second clip. Scoping it to the real audio length
-([`crates/asr/src/audio_ctx.rs`](crates/asr/src/audio_ctx.rs)) measured
-an **~11.7x speedup** on real hardware (a 3s clip: ~62s to decode → ~5s),
-for zero accuracy cost. Also switched the default model to
-`distil-small.en` (fewer decoder layers, faster on top of that fix) and,
-on Windows/MSVC, fixed `whisper-rs-sys`'s CMake build silently landing on
-scalar-only code with every SIMD flag off (see `.cargo/config.toml`).
+about. Three separate real, benchmarked (not guessed) issues, found and
+fixed in sequence as each one surfaced the next:
+
+1. **`audio_ctx` defaulting to a full 30s encoder context** regardless of
+   actual audio length. Every decode call was paying for 30 seconds of
+   encoder compute even on a 1-3 second clip. Scoping it to the real
+   audio length ([`crates/asr/src/audio_ctx.rs`](crates/asr/src/audio_ctx.rs))
+   measured an **~11.7x speedup** (a 3s clip: ~62s to decode → ~5s), for
+   zero accuracy cost. Also switched the default model to
+   `distil-small.en` (fewer decoder layers) and, on Windows/MSVC, fixed
+   `whisper-rs-sys`'s CMake build silently landing on scalar-only code
+   with every SIMD flag off (see `.cargo/config.toml`).
+2. **Thread count clamped to 4** without ever checking whether that was
+   actually the right number on real hardware -- it wasn't. See
+   `crates/asr/README.md`'s "thread count wasn't actually tuned either"
+   for the numbers (4 threads: slower than real-time; 8: ~0.8x
+   real-time; 16, all logical cores: 10-25x slower, badly).
+3. **Overlap fraction too large for the new decode speed to sustain**:
+   once decode got fast enough to matter, a large window-overlap
+   fraction meant the pipeline would still silently fall behind over a
+   long utterance, defeating the whole point of streaming ahead of the
+   user finishing talking. See `crates/asr/src/window.rs`'s
+   `default_16k` doc comment for the actual inequality this needs to
+   satisfy.
 
 If it ever feels slow again: benchmark it
-(`crates/asr/README.md`'s "Benchmarking" section has the exact commands)
-before changing anything. This regression shipped for a while because
-nobody had actually timed a real decode call.
+(`crates/asr/README.md`'s "Benchmarking" section has the exact commands,
+including a real-time-factor sweep across window sizes and thread
+counts) before changing anything. Every one of the three regressions
+above shipped for a while because nobody had actually timed a real
+decode call until asked to.
 
 ## Privacy: the always-on buffer
 

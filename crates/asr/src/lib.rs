@@ -21,14 +21,20 @@
 //! See [`README`](https://github.com/ndunl075/wispr-flow-clone/tree/main/crates/asr)
 //! for how to fetch a model; none is checked into the repo.
 
+mod audio_ctx;
 mod dictionary;
 mod merge;
 mod text;
 mod window;
 
+pub use audio_ctx::audio_ctx_for;
 pub use dictionary::{build_initial_prompt, load_dictionary_file, parse_dictionary};
 pub use merge::merge_overlap;
 pub use window::WindowPolicy;
+
+/// Sample rate every audio buffer this crate touches is assumed to be at
+/// (matches `ring_buffer::DEFAULT_SAMPLE_RATE_HZ` / `audio_input::TARGET_SAMPLE_RATE_HZ`).
+const SAMPLE_RATE_HZ: u32 = 16_000;
 
 use std::path::PathBuf;
 
@@ -111,7 +117,7 @@ impl Transcriber {
     /// rolling windows decoded during speech instead.
     pub fn transcribe(&self, audio_16k_mono: &[f32]) -> Result<String, AsrError> {
         let mut state = self.ctx.create_state()?;
-        let params = self.decode_params();
+        let params = self.decode_params(audio_16k_mono.len());
         state.full(params, audio_16k_mono)?;
 
         let n_segments = state.full_n_segments();
@@ -124,7 +130,7 @@ impl Transcriber {
         Ok(text::join_segments(segments.iter().map(String::as_str)))
     }
 
-    fn decode_params(&self) -> FullParams<'_, '_> {
+    fn decode_params(&self, sample_count: usize) -> FullParams<'_, '_> {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(self.config.n_threads);
         params.set_translate(false);
@@ -136,6 +142,12 @@ impl Transcriber {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        // The single biggest speed lever here: scope the encoder's context
+        // to how much audio actually arrived instead of paying for a full
+        // 30s context every time (whisper.cpp's `audio_ctx` default of 0
+        // means "full 30s" regardless of input length). See audio_ctx.rs
+        // for the ~11.7x measurement behind this.
+        params.set_audio_ctx(audio_ctx::audio_ctx_for(sample_count, SAMPLE_RATE_HZ));
         // No temperature-fallback decoding: fixed temperature, no retry ladder.
         params.set_temperature(0.0);
         params.set_temperature_inc(0.0);

@@ -1,0 +1,26 @@
+# whisper-rs-sys builds whisper.cpp/ggml via CMake with GGML_NATIVE=ON,
+# which is supposed to auto-detect the build machine's CPU SIMD features
+# (the equivalent of GCC/Clang's `-march=native`). On MSVC that detection
+# is a silent no-op -- MSVC has no `-march=native` flag, and ggml's CMake
+# logic doesn't have an MSVC-specific fallback -- so GGML_NATIVE=ON
+# quietly leaves every actual SIMD flag OFF (confirmed via
+# target/*/build/whisper-rs-sys-*/out/build/CMakeCache.txt: GGML_AVX,
+# GGML_AVX2, and even GGML_SSE42 all OFF). The result is scalar-only
+# ggml matmuls: whisper.cpp decoding ~19x slower than real time on a
+# 16-core Intel Core Ultra 7 that should be well under real time.
+#
+# whisper-rs-sys's build.rs forwards any GGML_*-prefixed env var straight
+# through as a CMake -D define, so setting these here fixes it without
+# patching the crate. AVX2 (+ FMA/F16C, which ship on every AVX2-capable
+# CPU) is a safe baseline for any x86-64 machine from the last ~decade+ --
+# it's literally what §2.3 of dictation-architecture.md calls the
+# "CPU/AVX2 fallback" backend. Not enabling AVX-512: several modern
+# consumer CPUs (including the one this was diagnosed on -- Intel's
+# hybrid P/E-core chips from Alder Lake on) have it fused off entirely,
+# so hardcoding it on could crash rather than help.
+[env]
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
+GGML_SSE42 = "ON"

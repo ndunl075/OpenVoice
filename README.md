@@ -58,8 +58,11 @@ mode (see below). It's a two-key chord rather than one key on purpose: a
 single common modifier is easy to trip by accident (bumping Left Ctrl
 while typing normally); a chord basically never happens unintentionally.
 As of v1, transcription streams continuously while the chord is held
-(rolling 3s windows, §2.3) instead of waiting for release -- only the
-trailing partial window is left to decode at that point. The ASR model path
+(rolling windows, §2.3 -- 1.5s with 0.5s overlap, tighter than the doc's
+illustrative 3s once `audio_ctx` scoping made decode fast enough that a
+shorter stride is a pure win; see `crates/asr/src/window.rs`) instead of
+waiting for release -- only the trailing ~1s partial window is left to
+decode at that point. The ASR model path
 defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to

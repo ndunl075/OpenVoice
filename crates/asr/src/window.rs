@@ -29,9 +29,19 @@ impl WindowPolicy {
         }
     }
 
-    /// The doc's literal numbers: 3s windows, 0.5s overlap, at 16kHz.
+    /// 1.5s windows, 0.5s overlap, at 16kHz -- tighter than the doc's
+    /// illustrative "3s windows" example. Once `asr::audio_ctx` fixed the
+    /// real bottleneck (see that module's docs: whisper.cpp was paying for
+    /// a full 30s encoder context on every decode regardless of input
+    /// length), decode of `distil-small.en` sits close to real-time, which
+    /// makes a shorter stride a pure win rather than a tradeoff: the first
+    /// partial result lands sooner, the pill's incremental updates feel
+    /// more alive, and -- the part that actually matters for perceived
+    /// latency -- the trailing partial window left to decode at hotkey
+    /// release ([`final_window`](Self::final_window)) is bounded by one
+    /// stride (1s) instead of three.
     pub fn default_16k() -> Self {
-        Self::new(16_000, Duration::from_millis(3000), Duration::from_millis(500))
+        Self::new(16_000, Duration::from_millis(1500), Duration::from_millis(500))
     }
 
     /// The `[start, end)` sample range of the next full window, if enough
@@ -67,10 +77,10 @@ mod tests {
     }
 
     #[test]
-    fn default_16k_matches_the_docs_numbers() {
+    fn default_16k_is_a_tight_window_bounded_final_tail() {
         let p = WindowPolicy::default_16k();
-        assert_eq!(p.window_samples, 48_000); // 3s @ 16kHz
-        assert_eq!(p.stride_samples, 40_000); // (3s - 0.5s) @ 16kHz
+        assert_eq!(p.window_samples, 24_000); // 1.5s @ 16kHz
+        assert_eq!(p.stride_samples, 16_000); // (1.5s - 0.5s) @ 16kHz -- the final-window bound
     }
 
     #[test]

@@ -113,10 +113,18 @@ impl PillApp {
             if event.id() == &self.menu_ids.hands_free {
                 let _ = self.control_tx.send(daemon::ControlEvent::HandsFreeTogglePressed);
             } else if event.id() == &self.menu_ids.quit {
-                let _ = self.control_tx.send(daemon::ControlEvent::Quit);
-                std::process::exit(0);
+                self.quit();
             }
         }
+    }
+
+    /// The one way this process actually ends: the tray menu's "Quit"
+    /// item and the pill's own close button both call this, so there's
+    /// no separate "UI close button" behavior to keep in sync with the
+    /// menu path.
+    fn quit(&self) {
+        let _ = self.control_tx.send(daemon::ControlEvent::Quit);
+        std::process::exit(0);
     }
 
     /// Terminal states (inserted/warning) auto-hide after [`FLASH_DURATION`].
@@ -155,11 +163,12 @@ impl eframe::App for PillApp {
         // the user's side, push-to-talk-held and hands-free-armed are the
         // same thing (the mic is capturing right now), so the copy
         // shouldn't imply a distinction they don't experience. The color
-        // still tells them apart (coral while a key is held, lavender for
-        // hands-free) and so does the bars/no-bars animation state.
+        // still tells them apart (near-black while a key is held,
+        // lavender for hands-free) and so does the bars/no-bars animation
+        // state.
         let (color, label, animate) = match &self.display {
             Display::Hidden => return,
-            Display::Recording => (rgba_to_color32(icon::RECORDING), "Listening…".to_string(), true),
+            Display::Recording => (rgba_to_color32(icon::LISTENING_ACTIVE), "Listening…".to_string(), true),
             Display::Listening => (rgba_to_color32(icon::LAVENDER), "Listening…".to_string(), true),
             Display::Transcribing => (rgba_to_color32(icon::THINKING), "Cleaning up…".to_string(), false),
             Display::Inserted { text, .. } => (rgba_to_color32(icon::SUCCESS), truncate(text, 60), false),
@@ -172,6 +181,7 @@ impl eframe::App for PillApp {
         // the pill's fixed height (see main.rs's viewport inner_size).
         let corner_radius = 28;
 
+        let mut quit_clicked = false;
         egui::Frame::new()
             .fill(rgba_to_color32(icon::CREAM_BACKGROUND))
             .corner_radius(egui::CornerRadius::same(corner_radius))
@@ -181,9 +191,39 @@ impl eframe::App for PillApp {
                     draw_level_bars(ui, color, animate);
                     ui.add_space(6.0);
                     ui.colored_label(rgba_to_color32(icon::DARK_TEXT), label);
+                    // Right-aligned within whatever space is left in the
+                    // row, so it sits at the pill's edge rather than
+                    // right after the label -- a panic button needs to be
+                    // somewhere predictable, not wherever the text
+                    // happened to end.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if draw_close_button(ui) {
+                            quit_clicked = true;
+                        }
+                    });
                 });
             });
+
+        // Quitting from inside the frame closure above would try to exit
+        // mid-borrow of `ui`; do it here instead, once the frame's done
+        // drawing.
+        if quit_clicked {
+            self.quit();
+        }
     }
+}
+
+/// A minimal "×" on the pill itself. Quitting used to only be reachable
+/// from the tray icon's right-click menu -- not much use if the pipeline
+/// is misbehaving and you just want it to stop *right now* while you're
+/// looking at the pill, not hunting for a tray icon. Calls through
+/// [`PillApp::quit`] via the caller's return value, so there's still
+/// exactly one quit code path.
+fn draw_close_button(ui: &mut egui::Ui) -> bool {
+    let text = egui::RichText::new("×").size(16.0).color(rgba_to_color32(icon::DARK_TEXT));
+    ui.add(egui::Button::new(text).frame(false))
+        .on_hover_text("Quit OpenVoice")
+        .clicked()
 }
 
 /// A small vertical-bar level meter -- the "equalizer bars" visual

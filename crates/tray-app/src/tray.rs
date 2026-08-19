@@ -47,7 +47,7 @@ pub fn build(mic_name: &str) -> Result<(TrayIcon, MenuIds), TrayError> {
 }
 
 fn idle_icon() -> Icon {
-    icon_for_rgba([90, 90, 100, 255])
+    icon_for_rgba(icon::WARM_NEUTRAL)
 }
 
 pub fn icon_for_status(status: &daemon::PipelineStatus) -> Icon {

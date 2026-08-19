@@ -52,9 +52,12 @@ cargo run -p daemon --release
 > its code, re-run `cargo build -p tray-app --release` and launch the
 > `.exe` again the same way.
 
-Hold Right Ctrl to dictate, release to insert the transcribed text at the
-cursor -- or tap AltGr to switch to hands-free mode (see below). As of v1,
-transcription streams continuously while the key is held
+Hold Right Ctrl + Right Shift together to dictate, release either to insert
+the transcribed text at the cursor -- or tap AltGr to switch to hands-free
+mode (see below). It's a two-key chord rather than one key on purpose: a
+single common modifier is easy to trip by accident (bumping Right Ctrl
+while typing normally); a chord basically never happens unintentionally.
+As of v1, transcription streams continuously while the chord is held
 (rolling 3s windows, §2.3) instead of waiting for release -- only the
 trailing partial window is left to decode at that point. The ASR model path
 defaults to `models/ggml-small.en-q5_1.bin`; override it with a CLI arg
@@ -83,9 +86,9 @@ layouts) to toggle hands-free listening on. Instead of holding a key,
 Silero VAD's confirmed end-of-speech commits each utterance -- and the
 daemon immediately starts listening for the next one, so a whole
 dictation session can run without touching the keyboard between
-utterances. Tap AltGr again to stop. Push-to-talk (Right Ctrl) and
-hands-free are mutually exclusive: whichever session is active, the other
-mode's key is ignored until it ends.
+utterances. Tap AltGr again to stop. Push-to-talk (Right Ctrl + Right
+Shift) and hands-free are mutually exclusive: whichever session is
+active, the other mode's key is ignored until it ends.
 
 **Recording indicator:** `tray-app` (see [`crates/tray-app`](crates/tray-app))
 gives you a system tray icon -- an original mic glyph, not a copy of any

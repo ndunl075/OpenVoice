@@ -32,12 +32,25 @@ curl -L -o models/silero_vad.onnx \
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
   https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
-# 2. Run it -- GUI (tray icon + floating recording pill, no console window)
-cargo run -p tray-app --release
+# 2. Build, then run the built .exe directly -- see the note below on
+#    why `cargo run` specifically doesn't work for tray-app.
+cargo build -p tray-app --release
+./target/release/dictation-tray.exe
 
 # ...or the console version, if you'd rather see raw log output
 cargo run -p daemon --release
 ```
+
+> **`cargo run -p tray-app` looks like it does nothing -- use the two-step
+> build-then-run above instead.** This is a real, reproduced quirk of
+> `cargo run` wrapping a `windows_subsystem = "windows"` binary on
+> Windows: `cargo run` exits ~instantly with code 0 and no output, while
+> the exact same freshly-built `dictation-tray.exe` runs correctly (tray
+> icon, models loaded, mic live, stays resident) every time when launched
+> directly. `daemon` (console subsystem) doesn't have this problem --
+> `cargo run -p daemon` is fine. If you rebuild `tray-app` after changing
+> its code, re-run `cargo build -p tray-app --release` and launch the
+> `.exe` again the same way.
 
 Hold Right Ctrl to dictate, release to insert the transcribed text at the
 cursor -- or tap AltGr to switch to hands-free mode (see below). As of v1,

@@ -23,8 +23,17 @@ follows the pattern popularized by dictation apps like Wispr Flow. The
 ## Running
 
 ```sh
-cargo run -p tray-app --release
+cargo build -p tray-app --release
+./target/release/dictation-tray.exe
 ```
+
+**Don't use `cargo run -p tray-app` --** it's a reproduced Windows quirk:
+`cargo run` exits almost instantly with code 0 and zero output for this
+`windows_subsystem = "windows"` binary, even though the exact same
+freshly-built `.exe` runs correctly every time when launched directly
+(tray icon, models loaded, mic live, stays resident and responding).
+Build once, then launch the `.exe` from `target/release/` directly --
+after any code change, just re-run the build step first.
 
 Same model-fetching prerequisites as `crates/daemon` (see the root
 README's "Running" section) -- this binary loads the exact same

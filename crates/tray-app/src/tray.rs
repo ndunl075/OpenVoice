@@ -40,14 +40,14 @@ pub fn build(mic_name: &str) -> Result<(TrayIcon, MenuIds), TrayError> {
     let tray_icon = TrayIconBuilder::new()
         .with_icon(idle_icon())
         .with_menu(Box::new(menu))
-        .with_tooltip(format!("Local Dictation Engine\nMic: {mic_name}"))
+        .with_tooltip(format!("{}\nMic: {mic_name}", crate::APP_NAME))
         .build()?;
 
     Ok((tray_icon, menu_ids))
 }
 
 fn idle_icon() -> Icon {
-    icon_for_rgba(icon::WARM_NEUTRAL)
+    icon_for_rgba(icon::NEUTRAL)
 }
 
 pub fn icon_for_status(status: &daemon::PipelineStatus) -> Icon {

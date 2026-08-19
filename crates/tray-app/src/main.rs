@@ -1,9 +1,9 @@
-//! GUI front end: a system tray icon (with an original mic logo, not any
-//! third-party product's branding -- see `icon.rs`) plus a small floating
-//! "recording pill" window, both driving the exact same `daemon::Engine`
-//! the console binary uses. No console window: this binary is built with
-//! the Windows GUI subsystem, so launching it (double-click, Start Menu,
-//! etc.) never pops a terminal.
+//! OpenVoice's GUI front end: a system tray icon (with an original mic
+//! logo, not any third-party product's branding -- see `icon.rs`) plus a
+//! small floating "recording pill" window, both driving the exact same
+//! `daemon::Engine` the console binary uses. No console window: this
+//! binary is built with the Windows GUI subsystem, so launching it
+//! (double-click, Start Menu, etc.) never pops a terminal.
 //!
 //! Startup happens on the main thread (model loading takes a few seconds;
 //! blocking briefly before the window/tray appear is simpler and more
@@ -19,10 +19,15 @@ mod tray;
 
 use std::sync::mpsc;
 
+/// The one place the product name lives -- every user-visible string
+/// (window title, tray tooltip, message box, console banner) reads from
+/// here instead of repeating the name as a scattered literal.
+pub(crate) const APP_NAME: &str = "OpenVoice";
+
 fn main() {
     // No console window in GUI-subsystem builds, so this only shows up
     // when run from a terminal (e.g. `cargo run`) -- still useful there.
-    println!("Local Dictation Engine -- tray mode");
+    println!("{APP_NAME} -- tray mode");
 
     let engine = match daemon::Engine::load(|line| println!("{line}")) {
         Ok(engine) => engine,
@@ -49,7 +54,7 @@ fn main() {
     std::thread::spawn(move || engine.run(status_tx));
 
     let viewport = eframe::egui::ViewportBuilder::default()
-        .with_title("Dictation")
+        .with_title(APP_NAME)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
@@ -65,7 +70,7 @@ fn main() {
     };
 
     let result = eframe::run_native(
-        "Local Dictation Engine",
+        APP_NAME,
         native_options,
         Box::new(move |_cc| Ok(Box::new(app::PillApp::new(status_rx, control_tx, tray_icon, menu_ids)))),
     );
@@ -92,7 +97,7 @@ fn native_message_box(message: &str) {
 
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-    let title: Vec<u16> = OsStr::new("Local Dictation Engine").encode_wide().chain(once(0)).collect();
+    let title: Vec<u16> = OsStr::new(APP_NAME).encode_wide().chain(once(0)).collect();
     let body: Vec<u16> = OsStr::new(message).encode_wide().chain(once(0)).collect();
     unsafe {
         MessageBoxW(

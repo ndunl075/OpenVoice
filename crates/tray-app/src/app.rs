@@ -1,15 +1,15 @@
 //! The floating recording pill: a small, borderless, always-on-top window
-//! that shows the engine's current state -- the visual language Wispr
-//! Flow popularized for dictation apps (a minimal pill near the cursor
-//! that appears while recording and fades after inserting text), redrawn
-//! here from scratch with original colors/shapes, not their assets.
-//!
-//! Palette follows OpenNote's (opennote.com) warm, approachable direction
-//! -- cream background, warm brown text, golds/terracotta/sage for state
-//! -- instead of the cooler dark-slate "engineering tool" look most
-//! dictation-adjacent utilities default to. Same reasoning as the icon in
-//! `icon.rs`: the *shapes and colors* are original work inspired by that
-//! product's general aesthetic, not anything copied from it.
+//! that shows the engine's current state -- the interaction pattern
+//! Wispr Flow and its peers popularized for dictation apps (a minimal
+//! "bar" near the cursor that appears while recording, runs through a
+//! listening -> cleaning up -> final flow, and fades after inserting
+//! text). Redrawn here from scratch with original shapes and an original
+//! light cream-and-lavender palette, not any product's actual assets
+//! (logo, wordmark, exact colors) -- OpenVoice isn't and
+//! doesn't claim to be Wispr Flow; it follows the same well-established
+//! *pattern* other tools in this category use, same as most apps in any
+//! category share conventions (a phone app having a bottom tab bar
+//! doesn't make it a copy of the first app that had one).
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -146,13 +146,17 @@ impl eframe::App for PillApp {
         ctx.request_repaint_after(REPAINT_INTERVAL);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!matches!(self.display, Display::Hidden)));
 
+        // Labels follow the listening -> cleaning up -> final flow common
+        // to this class of dictation app: raw speech first, then a
+        // "tidying up" beat while the cleanup pass (§2.4) races its
+        // deadline, then the committed result.
         let (color, label) = match &self.display {
             Display::Hidden => return,
-            Display::Recording => (rgba_to_color32(icon::TERRACOTTA), "Recording…".to_string()),
-            Display::Listening => (rgba_to_color32(icon::GOLDEN_AMBER), "Listening…".to_string()),
-            Display::Transcribing => (rgba_to_color32(icon::MUSTARD), "Thinking…".to_string()),
-            Display::Inserted { text, .. } => (rgba_to_color32(icon::SAGE), truncate(text, 60)),
-            Display::Warning { text, .. } => (rgba_to_color32(icon::RUST), truncate(text, 60)),
+            Display::Recording => (rgba_to_color32(icon::RECORDING), "Recording…".to_string()),
+            Display::Listening => (rgba_to_color32(icon::LAVENDER), "Listening…".to_string()),
+            Display::Transcribing => (rgba_to_color32(icon::THINKING), "Cleaning up…".to_string()),
+            Display::Inserted { text, .. } => (rgba_to_color32(icon::SUCCESS), truncate(text, 60)),
+            Display::Warning { text, .. } => (rgba_to_color32(icon::WARNING), truncate(text, 60)),
         };
 
         // A true capsule, not just a rounded rect: corner radius = half
@@ -168,7 +172,7 @@ impl eframe::App for PillApp {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, color);
                     ui.add_space(6.0);
-                    ui.colored_label(rgba_to_color32(icon::WARM_TEXT), label);
+                    ui.colored_label(rgba_to_color32(icon::DARK_TEXT), label);
                 });
             });
     }
@@ -193,7 +197,7 @@ fn truncate(s: &str, max_chars: usize) -> String {
 /// mostly what shows up in alt-tab if it's ever visible unexpectedly.
 pub fn window_icon() -> egui::IconData {
     let size = 32;
-    let rgba = icon::render_mic_icon(size, icon::WARM_NEUTRAL, icon::GLYPH_COLOR);
+    let rgba = icon::render_mic_icon(size, icon::NEUTRAL, icon::GLYPH_COLOR);
     egui::IconData {
         rgba,
         width: size,

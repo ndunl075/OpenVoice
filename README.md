@@ -27,7 +27,8 @@ each merged as its own reviewed PR with a green CI run.
 - [x] **v0 — demo pipeline:** ring buffer, push-to-talk hotkey, batch Whisper
       on release, clipboard-paste injection.
 - [x] **v1 — the real win:** Silero VAD endpointing, streaming windowed decode.
-- [x] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
+- [x] **v2 — quality:** deadlined cleanup LLM pass (built, but **off by
+      default** — it can't meet §2.4's 120ms budget here, see below), user dictionary, pre-roll
       capture, hands-free mode.
 
 That's every item §4's build order calls for, plus §3's "Tray + minimal
@@ -87,10 +88,39 @@ defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
 `models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`. The
-cleanup model (§2.4) is optional -- if `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`
-(or `DICTATION_CLEANUP_MODEL_PATH`) isn't found, the daemon logs that and
-runs without it rather than refusing to start; every utterance falls back
-to raw ASR text.
+cleanup model (§2.4) is **off by default and not even loaded** -- see
+"The cleanup pass is off by default" below. Set
+`DICTATION_ENABLE_CLEANUP=1` to load it (path:
+`models/qwen2.5-0.5b-instruct-q4_k_m.gguf`, or
+`DICTATION_CLEANUP_MODEL_PATH`); if it's enabled but missing, the daemon
+logs that and runs without it rather than refusing to start.
+
+## The cleanup pass is off by default
+
+A deliberate departure from §2.4, on measurement rather than taste.
+
+§2.4 specifies a **hard 120ms deadline**: use the cleaned text if the
+small LLM returns in time, otherwise insert raw. Measured on this
+hardware ([`crates/cleanup/tests/abandoned_work_cost.rs`](crates/cleanup/tests/abandoned_work_cost.rs)),
+a full generation takes **516-677ms**. It therefore *never once* beat
+the deadline — meaning it never changed a single character of output,
+while burning a burst of LLM inference on every utterance. Worse, until
+recently that abandoned generation kept running to completion after the
+deadline, so the cost was paid in full for a result that was discarded
+by construction.
+
+Memory saved by not loading it, measured rather than assumed: **~100MB**
+of working set (771MB → 668MB, everything else identical). Worth stating
+precisely, because the obvious guess is wrong — the model *file* is
+460MB, but llama.cpp mmaps it, so resident use is far below that. The
+CPU and heat saving is the bigger prize.
+
+Two fixes: timed-out work is now genuinely cancelled (see
+`cleanup::CancelToken`), and the model isn't loaded at all unless asked
+for. §2.4's *quality* argument is sound — raw ASR output really is
+disfluent — it's the 120ms budget that this machine can't meet. On
+faster hardware, or with a raised deadline (accepting the latency), it's
+worth turning back on.
 
 **User dictionary (§2.3 "custom vocab"):** copy [`dictionary.example.txt`](dictionary.example.txt)
 to `dictionary.txt` (or point `DICTATION_DICTIONARY_PATH` at your own file)

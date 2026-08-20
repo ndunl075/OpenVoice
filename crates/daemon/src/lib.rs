@@ -77,6 +77,12 @@ const INJECTION_SETTLE_DELAY: Duration = Duration::from_millis(250);
 /// guarantees the user ever lets go.
 const CHORD_RELEASE_WAIT: Duration = Duration::from_millis(400);
 
+/// Extra audio kept *before* VAD-confirmed speech, so trimming dead air
+/// can't clip the attack of the first word. See
+/// [`vad::speech_start_estimate`]. Generous on purpose: decoding a little
+/// extra silence is cheap, losing a leading consonant is not.
+const SPEECH_LEAD_IN: Duration = Duration::from_millis(200);
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("couldn't load ASR model: {0}")]
@@ -163,6 +169,11 @@ struct Session {
     vad_fed_samples: usize,
     /// Whether the endpointer has confirmed speech started yet this session.
     heard_speech: bool,
+    /// Sample offset (from session start, pre-roll included) where real
+    /// speech begins, per [`vad::speech_start_estimate`]. Everything
+    /// before it is dead air and is never handed to the decoder -- see
+    /// [`SPEECH_LEAD_IN`].
+    speech_start_sample: usize,
     /// Whether a VAD frame has already failed this session -- see
     /// [`feed_vad`]'s error arm for why this is reported once rather
     /// than per frame.
@@ -188,6 +199,7 @@ impl Session {
             committed: String::new(),
             vad_fed_samples: 0,
             heard_speech: false,
+            speech_start_sample: 0,
             vad_failed: false,
         }
     }
@@ -233,6 +245,33 @@ pub fn cleanup_model_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
     PathBuf::from("models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
+}
+
+/// Whether to load the §2.4 cleanup model at all. **Off unless
+/// `DICTATION_ENABLE_CLEANUP` is set** to something other than `0`.
+///
+/// This deliberately departs from the architecture doc, which treats the
+/// cleanup pass as on-by-default-if-present. The reason is measurement,
+/// not preference: `crates/cleanup/tests/abandoned_work_cost.rs` shows a
+/// full generation takes **516-677ms against §2.4's hard 120ms
+/// deadline**, so on this hardware it *never once finishes in time*.
+/// Every utterance paid a burst of LLM inference to produce a result
+/// that was, by construction, always discarded.
+///
+/// Memory saved, measured rather than assumed: **~100MB** of working set
+/// (771MB -> 668MB with everything else identical). Notably *not* the
+/// 460MB the model file weighs -- llama.cpp mmaps it, so resident use is
+/// far below file size. The CPU/heat saving is the bigger prize and the
+/// reason this defaults off.
+///
+/// Enabling it is one env var, and worth doing on faster hardware or
+/// alongside a raised deadline -- §2.4's quality argument is sound, it's
+/// the 120ms budget this machine can't meet.
+pub fn cleanup_enabled_by_default() -> bool {
+    match std::env::var("DICTATION_ENABLE_CLEANUP") {
+        Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => false,
+    }
 }
 
 /// User dictionary path: `DICTATION_DICTIONARY_PATH`, then a plain-text
@@ -312,19 +351,36 @@ impl Engine {
         // §2.4: the cleanup pass is explicitly optional. Unlike ASR/VAD, a
         // missing model here doesn't stop the engine -- it just means
         // every utterance falls back to raw ASR text.
+        //
+        // Skipped entirely by default now -- see
+        // `cleanup_enabled_by_default`. Not loading is the point: the
+        // ~460MB of resident memory is most of what this process holds,
+        // and it was buying nothing, since the generation never once beat
+        // its 120ms deadline.
         let cleanup_model_path = cleanup_model_path();
-        let cleanup = match cleanup::CleanupModel::load(&cleanup_model_path) {
-            Ok(c) => {
-                print(&format!("Cleanup model: {}", cleanup_model_path.display()));
-                Some(c)
+        let cleanup = if cleanup_enabled_by_default() {
+            match cleanup::CleanupModel::load(&cleanup_model_path) {
+                Ok(c) => {
+                    print(&format!("Cleanup model: {}", cleanup_model_path.display()));
+                    Some(c)
+                }
+                Err(e) => {
+                    print(&format!(
+                        "Cleanup pass disabled (couldn't load {}): {e}",
+                        cleanup_model_path.display()
+                    ));
+                    None
+                }
             }
-            Err(e) => {
-                print(&format!(
-                    "Cleanup pass disabled (couldn't load {}): {e}",
-                    cleanup_model_path.display()
-                ));
-                None
-            }
+        } else {
+            print(
+                "Cleanup pass: OFF (default). It never finished inside \
+                 §2.4's 120ms deadline on this hardware -- measured \
+                 516-677ms -- so it burned CPU every utterance for a \
+                 result that was always discarded (~100MB saved too). \
+                 Set DICTATION_ENABLE_CLEANUP=1 to load it anyway.",
+            );
+            None
         };
 
         let injector = inject::TextInjector::new()?;
@@ -565,8 +621,13 @@ impl Engine {
                     let audio = session_audio(&self.ring, s);
                     let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s, &status_tx);
                     if s.heard_speech {
-                        if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
-                            decode_window(&self.transcriber, &audio[start..end], &mut s.committed);
+                        // Window over speech only -- see SPEECH_LEAD_IN.
+                        // Note the VAD above still gets the *whole*
+                        // buffer: trimming is about what the decoder
+                        // sees, not what the endpointer sees.
+                        let speech = &audio[s.speech_start_sample.min(audio.len())..];
+                        if let Some((start, end)) = window_policy.next_window(speech.len(), s.windows_decoded) {
+                            decode_window(&self.transcriber, &speech[start..end], &mut s.committed);
                             s.windows_decoded += 1;
                         }
                     }
@@ -606,8 +667,12 @@ impl Engine {
     ) {
         let _ = status_tx.send(PipelineStatus::Transcribing);
         let audio = session_audio(&self.ring, session);
-        if let Some((start, end)) = window_policy.final_window(audio.len(), session.windows_decoded) {
-            decode_window(&self.transcriber, &audio[start..end], &mut session.committed);
+        // Same trim as the streaming path. If the VAD never confirmed
+        // speech, `speech_start_sample` is still 0 and this decodes
+        // everything -- better a phantom word than a dropped utterance.
+        let speech = &audio[session.speech_start_sample.min(audio.len())..];
+        if let Some((start, end)) = window_policy.final_window(speech.len(), session.windows_decoded) {
+            decode_window(&self.transcriber, &speech[start..end], &mut session.committed);
         }
         // Settings-window toggle: skip reaching for the model at all
         // when it's off, same as if none had ever loaded.
@@ -667,10 +732,21 @@ fn feed_vad(
             Ok(probability) => {
                 if let Some(event) = endpointer.push_probability(probability) {
                     if event == vad::EndpointEvent::SpeechStart && !session.heard_speech {
-                        println!("(speech detected)");
-                    }
-                    if event == vad::EndpointEvent::SpeechStart {
+                        // Latch where speech began, once. Later
+                        // SpeechStart events within the same session are
+                        // resumptions after a pause -- the utterance
+                        // still starts at the first one.
+                        session.speech_start_sample = vad::speech_start_estimate(
+                            end,
+                            endpointer.config().start_frames,
+                            (audio_input::TARGET_SAMPLE_RATE_HZ as f64 * SPEECH_LEAD_IN.as_secs_f64())
+                                as usize,
+                        );
                         session.heard_speech = true;
+                        println!(
+                            "(speech detected; trimming {} samples of leading dead air)",
+                            session.speech_start_sample
+                        );
                     }
                     last_event = Some(event);
                 }
@@ -738,6 +814,13 @@ fn finish_utterance(
             committed
         }
     };
+
+    // Which window is about to receive the synthetic paste. Injection
+    // reports success as long as the keystrokes were *sent*, so when text
+    // "doesn't appear" this is the line that distinguishes "the paste
+    // failed" from "the paste landed somewhere else" -- two problems with
+    // opposite fixes.
+    println!("(pasting into: {})", inject::foreground_window_title());
 
     if let Err(e) = injector.inject(final_text) {
         eprintln!("warning: couldn't insert text: {e}");

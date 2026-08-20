@@ -243,7 +243,15 @@ impl PillApp {
                     }
                 });
                 if !self.cleanup_model_loaded {
-                    settings_ui.label(egui::RichText::new("(no cleanup model loaded -- nothing to toggle)").weak());
+                    settings_ui.label(
+                        egui::RichText::new(
+                            "Off by default: measured at 516-677ms against its 120ms \
+                             deadline, so it never finished in time -- it burned CPU \
+                             every utterance without ever changing the text. \
+                             Set DICTATION_ENABLE_CLEANUP=1 and restart to load it.",
+                        )
+                        .weak(),
+                    );
                 }
                 settings_ui.separator();
                 if settings_ui.button("Quit OpenVoice").clicked() {

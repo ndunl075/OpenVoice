@@ -56,3 +56,34 @@ pub fn is_focused_field_secure() -> bool {
     // primary target (see dictation-architecture.md §3).
     false
 }
+
+/// The foreground window's title, for diagnostics.
+///
+/// Injection sends synthetic keystrokes to *whatever currently has
+/// focus*, which means a paste that reports complete success can still
+/// put text somewhere the user isn't looking. When text "doesn't
+/// appear," the first thing worth knowing is which window actually
+/// received it -- guessing between "the paste failed" and "the paste
+/// went elsewhere" wastes a lot of time, and they need opposite fixes.
+#[cfg(windows)]
+pub fn foreground_window_title() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return "<none>".to_string();
+        }
+        let mut buf = [0u16; 256];
+        let len = GetWindowTextW(fg, &mut buf);
+        if len <= 0 {
+            return "<untitled>".to_string();
+        }
+        String::from_utf16_lossy(&buf[..len as usize])
+    }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_window_title() -> String {
+    "<unsupported>".to_string()
+}

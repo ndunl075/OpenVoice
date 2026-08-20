@@ -63,6 +63,13 @@ fn main() {
         .with_resizable(false)
         .with_inner_size([app::PILL_SIZE[0], app::PILL_SIZE[1]])
         .with_visible(false)
+        // The pill must never take keyboard focus. It is shown at exactly
+        // the moment the user is dictating into some *other* window, and
+        // §2.5's injection sends synthetic keystrokes to whatever has
+        // focus -- so a pill that activates when it appears would quietly
+        // receive the paste itself, with every layer still reporting
+        // success. It's a status indicator; it has nothing to type into.
+        .with_active(false)
         .with_icon(app::window_icon());
 
     let native_options = eframe::NativeOptions {

@@ -6,11 +6,29 @@
 //! where the overlap actually falls in the *text*. Instead, this finds the
 //! longest run of words at the end of what's already committed that
 //! matches a run at the start of the new window's transcript, and appends
-//! only what's new. Exact word-for-word matching only -- whisper.cpp's
-//! greedy, deterministic decode (§2.3: fixed temperature, no fallback)
-//! means the same audio in two overlapping windows decodes to the same
-//! words often enough for this to work well in practice; it isn't a fuzzy
-//! aligner.
+//! only what's new.
+//!
+//! **Matching is normalized (case- and punctuation-insensitive), and that
+//! matters more than it sounds.** This used to compare words exactly, on
+//! the reasoning that whisper.cpp's greedy deterministic decode gives the
+//! same audio the same words. The words *are* the same -- but each window
+//! is decoded independently (`no_context = true`), so whisper treats every
+//! one as a fresh sentence and re-capitalizes and re-punctuates it. Real
+//! observed failure: committed ended `"...what's going on"` while the next
+//! window began `"What's going on?"`, which is the same three words and
+//! matched on none of them. The overlap went undetected and the phrase was
+//! appended verbatim, so a short utterance came out as
+//! `"That's what's going on What's going on?"`.
+//!
+//! Comparison is normalized; the text that actually gets emitted is still
+//! the original, unmodified window text.
+
+/// Words compare equal if they match ignoring case and surrounding
+/// punctuation. See the module docs for why exact matching was wrong.
+fn normalized(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+        .to_lowercase()
+}
 
 /// Merges `next_window_text` into `committed`, deduplicating the overlap.
 pub fn merge_overlap(committed: &str, next_window_text: &str) -> String {
@@ -24,10 +42,13 @@ pub fn merge_overlap(committed: &str, next_window_text: &str) -> String {
         return committed_words.join(" ");
     }
 
+    let committed_norm: Vec<String> = committed_words.iter().map(|w| normalized(w)).collect();
+    let next_norm: Vec<String> = next_words.iter().map(|w| normalized(w)).collect();
+
     let max_overlap = committed_words.len().min(next_words.len());
     let overlap_len = (1..=max_overlap)
         .rev()
-        .find(|&len| committed_words[committed_words.len() - len..] == next_words[..len])
+        .find(|&len| committed_norm[committed_norm.len() - len..] == next_norm[..len])
         .unwrap_or(0);
 
     let mut merged = committed_words.join(" ");
@@ -94,5 +115,43 @@ mod tests {
             committed = merge_overlap(&committed, window);
         }
         assert_eq!(committed, "the quick brown fox jumps over the lazy dog");
+    }
+
+    #[test]
+    fn overlap_matches_despite_recapitalization_and_punctuation() {
+        // The exact production failure: each window is decoded
+        // independently, so whisper re-capitalizes and re-punctuates the
+        // same words. Comparing exactly missed the overlap entirely and
+        // produced "That's what's going on What's going on?".
+        assert_eq!(
+            merge_overlap("That's what's going on", "What's going on?"),
+            "That's what's going on"
+        );
+    }
+
+    #[test]
+    fn emitted_text_keeps_the_original_words_not_the_normalized_ones() {
+        // Normalization is only for *comparison* -- punctuation and case
+        // in the actual output must survive untouched.
+        assert_eq!(
+            merge_overlap("Hello there", "There, world!"),
+            "Hello there world!"
+        );
+    }
+
+    #[test]
+    fn a_trailing_period_does_not_hide_an_overlap() {
+        assert_eq!(
+            merge_overlap("we should ship it", "Ship it. Tomorrow"),
+            "we should ship it Tomorrow"
+        );
+    }
+
+    #[test]
+    fn apostrophes_are_part_of_the_word_not_stripped_punctuation() {
+        // "what's" must not normalize to "what" -- that would make
+        // genuinely different words collide.
+        assert_ne!(normalized("what's"), normalized("what"));
+        assert_eq!(normalized("What's,"), normalized("what's"));
     }
 }

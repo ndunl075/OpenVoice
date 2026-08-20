@@ -612,13 +612,16 @@ impl Engine {
         finish_utterance(&session.committed, cleanup, &mut self.injector, status_tx);
         std::thread::sleep(INJECTION_SETTLE_DELAY);
         self.injecting.store(false, Ordering::Relaxed);
-
-        // Anything queued *before* the flag went up (e.g. the tail of the
-        // user's own key release) would otherwise be processed now and
-        // could start a phantom session. The utterance is committed;
-        // nothing pending from before this point is still meaningful.
-        while self.rx.try_recv().is_ok() {}
         self.ptt_active.store(false, Ordering::Relaxed);
+
+        // NOTE: do *not* drain `rx` here. An earlier version did, to
+        // discard anything queued before the suppression flag went up --
+        // but the queue is also where a legitimate *next* press lands if
+        // the user starts talking again quickly, and draining threw those
+        // away, so the following dictation silently did nothing. The
+        // hotkey callback's `injecting` check already filters our own
+        // synthetic keystrokes precisely, at the source; a blanket drain
+        // here can only destroy real input.
     }
 }
 

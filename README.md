@@ -30,9 +30,15 @@ each merged as its own reviewed PR with a green CI run.
 - [x] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
 
-That's every item §4's build order calls for. See "Known gaps" below for
-what's in the doc but *outside* that checklist (§3's stack table has a
-couple of entries §4 never actually requires) and hasn't been built.
+That's every item §4's build order calls for, plus §3's "Tray + minimal
+overlay" and a settings window.
+
+**Feature-complete is not the same as target-met.** The build order is
+done; the doc's headline **< 200 ms** latency target is not (see
+[Latency: the real numbers](#latency-the-real-numbers)). Those are
+separate claims and this README used to blur them. "Known gaps" below
+covers what's in the doc but outside §4's checklist — of which GPU
+backends is the one that actually blocks the latency target.
 
 ## Running
 
@@ -291,7 +297,7 @@ required, just a longer first build.
 
 ```sh
 cargo build --workspace
-cargo test --workspace    # 83 tests, all pure-logic; hardware/model paths are compile-verified only
+cargo test --workspace    # 104 tests, all pure-logic; hardware/model paths are compile-verified only
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

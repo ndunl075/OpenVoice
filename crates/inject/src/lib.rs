@@ -17,7 +17,7 @@
 
 mod secure_field;
 
-pub use secure_field::is_focused_field_secure;
+pub use secure_field::{foreground_window_title, is_focused_field_secure};
 
 use std::thread::sleep;
 use std::time::Duration;

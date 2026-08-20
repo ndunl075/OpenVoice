@@ -13,7 +13,7 @@ mod endpoint;
 mod framing;
 
 pub use endpoint::{EndpointConfig, EndpointEvent, Endpointer};
-pub use framing::next_frame_range;
+pub use framing::{next_frame_range, speech_start_estimate};
 
 use std::path::Path;
 

@@ -71,6 +71,14 @@ impl Endpointer {
         }
     }
 
+    /// The thresholds this endpointer is running with. Callers need
+    /// `start_frames` in particular to work out how far *before* a
+    /// confirmed `SpeechStart` the speech actually began -- see
+    /// [`crate::speech_start_estimate`].
+    pub fn config(&self) -> &EndpointConfig {
+        &self.config
+    }
+
     /// Whether the endpointer currently considers itself inside a speech
     /// segment (confirmed start, not yet confirmed end). Frames while this
     /// is false are the silence §2.2 says to trim before it ever reaches

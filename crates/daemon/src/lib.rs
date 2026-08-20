@@ -77,6 +77,12 @@ const INJECTION_SETTLE_DELAY: Duration = Duration::from_millis(250);
 /// guarantees the user ever lets go.
 const CHORD_RELEASE_WAIT: Duration = Duration::from_millis(400);
 
+/// Extra audio kept *before* VAD-confirmed speech, so trimming dead air
+/// can't clip the attack of the first word. See
+/// [`vad::speech_start_estimate`]. Generous on purpose: decoding a little
+/// extra silence is cheap, losing a leading consonant is not.
+const SPEECH_LEAD_IN: Duration = Duration::from_millis(200);
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("couldn't load ASR model: {0}")]
@@ -163,6 +169,11 @@ struct Session {
     vad_fed_samples: usize,
     /// Whether the endpointer has confirmed speech started yet this session.
     heard_speech: bool,
+    /// Sample offset (from session start, pre-roll included) where real
+    /// speech begins, per [`vad::speech_start_estimate`]. Everything
+    /// before it is dead air and is never handed to the decoder -- see
+    /// [`SPEECH_LEAD_IN`].
+    speech_start_sample: usize,
     /// Whether a VAD frame has already failed this session -- see
     /// [`feed_vad`]'s error arm for why this is reported once rather
     /// than per frame.
@@ -188,6 +199,7 @@ impl Session {
             committed: String::new(),
             vad_fed_samples: 0,
             heard_speech: false,
+            speech_start_sample: 0,
             vad_failed: false,
         }
     }
@@ -609,8 +621,13 @@ impl Engine {
                     let audio = session_audio(&self.ring, s);
                     let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s, &status_tx);
                     if s.heard_speech {
-                        if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
-                            decode_window(&self.transcriber, &audio[start..end], &mut s.committed);
+                        // Window over speech only -- see SPEECH_LEAD_IN.
+                        // Note the VAD above still gets the *whole*
+                        // buffer: trimming is about what the decoder
+                        // sees, not what the endpointer sees.
+                        let speech = &audio[s.speech_start_sample.min(audio.len())..];
+                        if let Some((start, end)) = window_policy.next_window(speech.len(), s.windows_decoded) {
+                            decode_window(&self.transcriber, &speech[start..end], &mut s.committed);
                             s.windows_decoded += 1;
                         }
                     }
@@ -650,8 +667,12 @@ impl Engine {
     ) {
         let _ = status_tx.send(PipelineStatus::Transcribing);
         let audio = session_audio(&self.ring, session);
-        if let Some((start, end)) = window_policy.final_window(audio.len(), session.windows_decoded) {
-            decode_window(&self.transcriber, &audio[start..end], &mut session.committed);
+        // Same trim as the streaming path. If the VAD never confirmed
+        // speech, `speech_start_sample` is still 0 and this decodes
+        // everything -- better a phantom word than a dropped utterance.
+        let speech = &audio[session.speech_start_sample.min(audio.len())..];
+        if let Some((start, end)) = window_policy.final_window(speech.len(), session.windows_decoded) {
+            decode_window(&self.transcriber, &speech[start..end], &mut session.committed);
         }
         // Settings-window toggle: skip reaching for the model at all
         // when it's off, same as if none had ever loaded.
@@ -711,10 +732,21 @@ fn feed_vad(
             Ok(probability) => {
                 if let Some(event) = endpointer.push_probability(probability) {
                     if event == vad::EndpointEvent::SpeechStart && !session.heard_speech {
-                        println!("(speech detected)");
-                    }
-                    if event == vad::EndpointEvent::SpeechStart {
+                        // Latch where speech began, once. Later
+                        // SpeechStart events within the same session are
+                        // resumptions after a pause -- the utterance
+                        // still starts at the first one.
+                        session.speech_start_sample = vad::speech_start_estimate(
+                            end,
+                            endpointer.config().start_frames,
+                            (audio_input::TARGET_SAMPLE_RATE_HZ as f64 * SPEECH_LEAD_IN.as_secs_f64())
+                                as usize,
+                        );
                         session.heard_speech = true;
+                        println!(
+                            "(speech detected; trimming {} samples of leading dead air)",
+                            session.speech_start_sample
+                        );
                     }
                     last_event = Some(event);
                 }
@@ -782,6 +814,13 @@ fn finish_utterance(
             committed
         }
     };
+
+    // Which window is about to receive the synthetic paste. Injection
+    // reports success as long as the keystrokes were *sent*, so when text
+    // "doesn't appear" this is the line that distinguishes "the paste
+    // failed" from "the paste landed somewhere else" -- two problems with
+    // opposite fixes.
+    println!("(pasting into: {})", inject::foreground_window_title());
 
     if let Err(e) = injector.inject(final_text) {
         eprintln!("warning: couldn't insert text: {e}");

@@ -21,7 +21,7 @@
 mod deadline;
 mod prompt;
 
-pub use deadline::run_with_deadline;
+pub use deadline::{run_with_deadline, CancelToken};
 pub use prompt::build_prompt;
 
 use std::num::NonZeroU32;
@@ -102,8 +102,10 @@ impl CleanupModel {
         let n_ctx = self.n_ctx;
         let prompt = build_prompt(raw_text);
 
-        run_with_deadline(deadline, move || generate(&backend, &model, &prompt, n_ctx))
-            .and_then(|result| result.ok())
+        run_with_deadline(deadline, move |cancel| {
+            generate(&backend, &model, &prompt, n_ctx, &cancel)
+        })
+        .and_then(|result| result.ok())
     }
 }
 
@@ -112,7 +114,13 @@ impl CleanupModel {
 /// a deterministic cleanup step, not a creative one, and greedy decode
 /// avoids needing to think about seeding across the abandon-on-timeout
 /// boundary in [`run_with_deadline`].
-fn generate(backend: &LlamaBackend, model: &LlamaModel, prompt: &str, n_ctx: NonZeroU32) -> Result<String, CleanupError> {
+fn generate(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    prompt: &str,
+    n_ctx: NonZeroU32,
+    cancel: &CancelToken,
+) -> Result<String, CleanupError> {
     let ctx_params = LlamaContextParams::default().with_n_ctx(Some(n_ctx));
     let mut ctx = model.new_context(backend, ctx_params)?;
 
@@ -132,6 +140,17 @@ fn generate(backend: &LlamaBackend, model: &LlamaModel, prompt: &str, n_ctx: Non
     // rewrite would fold it into the range and lose that meaning).
     #[allow(clippy::explicit_counter_loop)]
     for _ in 0..MAX_NEW_TOKENS {
+        // The deadline has passed and this result will be discarded --
+        // stop rather than keep decoding tokens nobody will read. This
+        // is the common case, not an edge case: a full generation runs
+        // 516-677ms against a 120ms deadline (see
+        // `tests/abandoned_work_cost.rs`), so without this check every
+        // utterance burns hundreds of milliseconds of inference purely
+        // as heat. Whatever partial `output` we've accumulated is
+        // thrown away by `run_with_deadline`'s caller anyway.
+        if cancel.is_cancelled() {
+            break;
+        }
         if model.is_eog_token(next_token) {
             break;
         }

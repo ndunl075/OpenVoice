@@ -33,6 +33,18 @@ const REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 /// idle/terminal states, which don't animate and don't need it.
 const ANIMATION_REPAINT_INTERVAL: Duration = Duration::from_millis(50);
 
+/// The pill window's size. Wider and slightly shorter than the original
+/// capsule so [`PILL_CORNER_RADIUS`] reads as a rounded rectangle rather
+/// than a lozenge.
+pub const PILL_SIZE: [f32; 2] = [300.0, 52.0];
+
+/// Corner radius: a rounded rectangle, not a capsule. A true capsule
+/// would be half the height (26); this is deliberately well under that.
+const PILL_CORNER_RADIUS: u8 = 14;
+
+/// Gap between the pill and the screen's bottom-left corner.
+const SCREEN_MARGIN: f32 = 24.0;
+
 #[derive(Clone)]
 enum Display {
     Hidden,
@@ -68,6 +80,10 @@ pub struct PillApp {
     // ControlEvent::SetCleanupEnabled.
     cleanup_enabled: bool,
     show_settings: bool,
+    /// Bottom-left placement can only be computed once egui can tell us
+    /// the monitor size, which isn't known until the first frame -- so
+    /// it's done once, then latched.
+    positioned: bool,
 }
 
 impl PillApp {
@@ -91,7 +107,25 @@ impl PillApp {
             cleanup_model_loaded: false,
             cleanup_enabled: false,
             show_settings: false,
+            positioned: false,
         }
+    }
+
+    /// Parks the pill in the bottom-left corner of the primary monitor,
+    /// once, on the first frame that reports a monitor size. Done here
+    /// rather than in `main.rs`'s `ViewportBuilder` because the monitor
+    /// dimensions aren't available before the window exists.
+    fn position_bottom_left(&mut self, ctx: &egui::Context) {
+        if self.positioned {
+            return;
+        }
+        let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else {
+            return; // not known yet; try again next frame
+        };
+        let x = SCREEN_MARGIN;
+        let y = monitor.y - PILL_SIZE[1] - SCREEN_MARGIN;
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        self.positioned = true;
     }
 
     fn apply_status(&mut self, status: daemon::PipelineStatus) {
@@ -241,6 +275,7 @@ impl eframe::App for PillApp {
         self.expire_flash();
 
         let ctx = ui.ctx().clone();
+        self.position_bottom_left(&ctx);
         if self.show_settings {
             self.draw_settings_window(&ctx);
         }
@@ -264,14 +299,10 @@ impl eframe::App for PillApp {
 
         ctx.request_repaint_after(if animate { ANIMATION_REPAINT_INTERVAL } else { REPAINT_INTERVAL });
 
-        // A true capsule, not just a rounded rect: corner radius = half
-        // the pill's fixed height (see main.rs's viewport inner_size).
-        let corner_radius = 28;
-
         let mut quit_clicked = false;
         egui::Frame::new()
             .fill(rgba_to_color32(icon::CREAM_BACKGROUND))
-            .corner_radius(egui::CornerRadius::same(corner_radius))
+            .corner_radius(egui::CornerRadius::same(PILL_CORNER_RADIUS))
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {

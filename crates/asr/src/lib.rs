@@ -64,7 +64,42 @@ pub struct AsrConfig {
     /// "custom vocab"). Build this from a user's dictionary file with
     /// [`load_dictionary_file`] + [`build_initial_prompt`].
     pub initial_prompt: Option<String>,
+    /// Step size of whisper.cpp's temperature-fallback ladder: when the
+    /// greedy pass's own entropy/logprob checks say the result looks bad,
+    /// it re-decodes at `temperature += temperature_inc`, repeating up to
+    /// temperature 1.0.
+    ///
+    /// A genuine tradeoff, and the reason this is configurable rather
+    /// than hardcoded. `dictation-architecture.md` §2.3 lists "no
+    /// temperature fallback" as a speed setting, and 0.0 (fully
+    /// disabled) is indeed fastest -- but it shipped real, user-visible
+    /// garbage output ("typing a bunch of random words"), because
+    /// nothing was left to catch a bad greedy decode on the short,
+    /// context-free clips every rolling window here produces. So this
+    /// deliberately deviates from the doc.
+    ///
+    /// The cost is worst-case latency, and it's not small: each rung is
+    /// another full decode, so 0.2 (whisper.cpp's own default) allows up
+    /// to ~5 extra decodes. See [`DEFAULT_TEMPERATURE_INC`] for the
+    /// measured compromise.
+    pub temperature_inc: f32,
 }
+
+/// Coarser than whisper.cpp's own 0.2 default, on purpose.
+///
+/// Measured (`crates/asr/tests/commit_latency.rs`): with 0.2, a tail
+/// window the model finds ambiguous could take **~4.3 seconds** to
+/// decode -- worse than a clip four times longer -- because it walked
+/// most of the 0.0/0.2/0.4/0.6/0.8/1.0 ladder, paying a full decode per
+/// rung. That's a catastrophic latency spike in the one code path
+/// (`WindowPolicy::final_window` at hotkey release) the user actually
+/// waits on.
+///
+/// 0.4 keeps the retry safety net that fixed the garbage-output bug --
+/// a bad greedy decode still gets re-tried, which is the part that
+/// matters -- while bounding the ladder to 0.0/0.4/0.8, i.e. at most 3
+/// decodes instead of 6.
+pub const DEFAULT_TEMPERATURE_INC: f32 = 0.4;
 
 impl AsrConfig {
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
@@ -73,6 +108,7 @@ impl AsrConfig {
             language: Some("en".to_string()),
             n_threads: default_thread_count(),
             initial_prompt: None,
+            temperature_inc: DEFAULT_TEMPERATURE_INC,
         }
     }
 }
@@ -179,7 +215,7 @@ impl Transcriber {
         // model itself flags as low-confidence, so this shouldn't cost
         // anything on the common case where the first pass was fine.
         params.set_temperature(0.0);
-        params.set_temperature_inc(0.2);
+        params.set_temperature_inc(self.config.temperature_inc);
         if let Some(lang) = self.config.language.as_deref() {
             params.set_language(Some(lang));
         }

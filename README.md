@@ -1,9 +1,17 @@
 # OpenVoice
 
-On-device voice dictation: text appears at the cursor in well under 200 ms
-after you stop talking, and no audio ever leaves the machine. Full design
+On-device voice dictation: you hold a hotkey, talk, let go, and the text
+lands at your cursor — and no audio ever leaves the machine. Full design
 rationale lives in [`dictation-architecture.md`](dictation-architecture.md) —
 this README tracks what's actually built.
+
+**On the "< 200 ms" target:** the architecture doc sets that as the goal,
+and this README used to claim it was met. It isn't, and nobody had
+measured it — see [Latency: the real numbers](#latency-the-real-numbers)
+below for what it actually does today (roughly **300 ms – 1.2 s** from
+key release to text, depending on how much speech lands in the trailing
+window). The privacy claim — no audio off the machine — *is* verifiable
+in the code and holds.
 
 (The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
 clone URLs still redirect. The local working-copy folder on disk here
@@ -22,9 +30,15 @@ each merged as its own reviewed PR with a green CI run.
 - [x] **v2 — quality:** deadlined cleanup LLM pass, user dictionary, pre-roll
       capture, hands-free mode.
 
-That's every item §4's build order calls for. See "Known gaps" below for
-what's in the doc but *outside* that checklist (§3's stack table has a
-couple of entries §4 never actually requires) and hasn't been built.
+That's every item §4's build order calls for, plus §3's "Tray + minimal
+overlay" and a settings window.
+
+**Feature-complete is not the same as target-met.** The build order is
+done; the doc's headline **< 200 ms** latency target is not (see
+[Latency: the real numbers](#latency-the-real-numbers)). Those are
+separate claims and this README used to blur them. "Known gaps" below
+covers what's in the doc but outside §4's checklist — of which GPU
+backends is the one that actually blocks the latency target.
 
 ## Running
 
@@ -143,13 +157,72 @@ fixed in sequence as each one surfaced the next:
    user finishing talking. See `crates/asr/src/window.rs`'s
    `default_16k` doc comment for the actual inequality this needs to
    satisfy.
+4. **`audio_ctx` values that weren't block-aligned fell off ggml's SIMD
+   kernels.** Fixing #1 introduced this one: scoping `audio_ctx` to the
+   clip length produces small values for short clips, and small
+   *non-multiple-of-16* values turn out to be catastrophic. Measured on
+   identical 0.25s audio, varying only this parameter:
+   `audio_ctx=13` → **5.2s**, `audio_ctx=16` → **327ms**. The fast
+   values are exactly the multiples of 16; everything else costs ~10x.
+   This hit the worst possible place — the trailing window at key
+   release is short by construction, so it landed in the bad range
+   constantly. Rounding up to a 16-frame block cut a 0.25s tail from
+   **4.3s to 302ms**. See
+   [`crates/asr/src/audio_ctx.rs`](crates/asr/src/audio_ctx.rs)'s
+   `CONTEXT_BLOCK` and `crates/asr/tests/small_audio_ctx_probe.rs`.
 
 If it ever feels slow again: benchmark it
 (`crates/asr/README.md`'s "Benchmarking" section has the exact commands,
 including a real-time-factor sweep across window sizes and thread
-counts) before changing anything. Every one of the three regressions
+counts) before changing anything. Every one of the four regressions
 above shipped for a while because nobody had actually timed a real
-decode call until asked to.
+decode call until asked to — and #4 was found only because the *first*
+guess about its cause (the temperature-fallback retry ladder) was
+tested and turned out to be wrong.
+
+## Latency: the real numbers
+
+The architecture doc targets **< 200 ms** from end-of-speech to text at
+the cursor. That target is **not currently met.** Measured with
+[`crates/asr/tests/commit_latency.rs`](crates/asr/tests/commit_latency.rs)
+(the numbers below are decode + the doc's own ~15ms injection estimate;
+add up to 120ms more when the cleanup pass runs and uses its full
+deadline):
+
+| Trailing tail at release | End-of-speech → cursor |
+|---|---|
+| 0.10 s | ~40 ms ✅ |
+| 0.25 s | ~317 ms |
+| 0.50 s | ~626 ms |
+| 1.00 s (worst case) | ~1.1 s |
+
+**Why it can't currently hit 200 ms:** the tail is whatever audio
+arrived since the last full streaming window, so it's bounded by the
+window stride (1.0s). Getting a 200ms *total* would need the tail under
+roughly 0.2s of audio, i.e. a ~0.2s stride — but streaming only keeps up
+if each window decodes faster than the next one arrives (`0.8 × window <
+stride`, see `window.rs`), which with a 0.2s stride would force windows
+so short that accuracy collapses. On this CPU, with this model, the two
+constraints are mutually exclusive. **GPU acceleration is the real path
+to the doc's target** — see "Known gaps" below; it's the difference
+between shaving milliseconds and changing the constraint.
+
+Two honest caveats on the numbers above:
+
+- **The benchmark drives a synthetic sine, not real speech.** It forces
+  real encoder/decoder work, but token counts — and so decode time —
+  differ on real content. Treat these as the right order of magnitude,
+  not gospel.
+- **There's a worst case worse than the table.** whisper.cpp's
+  temperature-fallback retry ladder re-decodes when its own confidence
+  checks flag a bad result. That's deliberately enabled here (it's what
+  fixed a real "types random words" bug — see
+  `AsrConfig::temperature_inc`), and it's a genuine tradeoff: on audio
+  the model finds ambiguous, a tail decode can spike to **~5s**. The
+  synthetic sine triggers this on *every* run because it isn't speech at
+  all; real speech should trigger it rarely. Quantifying "rarely"
+  honestly needs a corpus of real recorded audio, which this repo
+  doesn't have yet — flagging it rather than guessing a number.
 
 ## Privacy: the always-on buffer
 
@@ -190,12 +263,38 @@ the thing an on-device product cannot be sloppy about:
 and so is §3's "Tray + minimal overlay" ([`tray-app`](crates/tray-app)).
 One thing §3 mentions is still not built:
 
-- **GPU backends.** §2.3 mentions Metal/CUDA backends for whisper.cpp;
-  `asr`'s `Cargo.toml` doesn't enable whisper-rs's `cuda`/`metal` feature
-  flags, so this build is CPU-only (whisper.cpp's own AVX2 auto-detection
-  still applies -- that's the "CPU/AVX2 fallback" leg of §2.3's backend
-  list, just not the GPU-accelerated ones). Enabling `cuda` needs a CUDA
-  toolkit on the build machine and hasn't been tested here.
+- **GPU backends -- and this is the one that matters.** §2.3 mentions
+  Metal/CUDA backends for whisper.cpp; `asr`'s `Cargo.toml` doesn't
+  enable whisper-rs's `cuda`/`metal` feature flags, so this build is
+  CPU-only (whisper.cpp's own AVX2 auto-detection still applies --
+  that's the "CPU/AVX2 fallback" leg of §2.3's backend list, just not
+  the GPU-accelerated ones).
+
+  This is no longer a nice-to-have: per [Latency: the real
+  numbers](#latency-the-real-numbers), CPU decode speed is exactly what
+  makes the doc's < 200 ms target unreachable, because it forces a
+  window stride far larger than the latency budget allows. Every
+  remaining CPU-side optimization is shaving milliseconds off the wrong
+  constraint. The machine this was built on has no NVIDIA GPU (so no
+  CUDA) and isn't Apple (so no Metal) — it has an Intel Arc 140T
+  integrated GPU, which makes **Vulkan** the realistic backend to try.
+  The Cargo features are now wired up and ready — `asr`, `daemon`, and
+  `tray-app` each expose `vulkan` / `cuda` / `metal`, all **off by
+  default** (a default-on GPU feature would turn `cargo build` into a
+  confusing native-build failure on every machine without the vendor
+  SDK, CI included):
+
+  ```sh
+  cargo build -p tray-app --release --features vulkan
+  ```
+
+  What's *not* done is actually building and benchmarking it. That needs
+  the **Vulkan SDK** installed at build time — this machine has the
+  Vulkan runtime loader (`vulkan-1.dll`) and a capable GPU, but not the
+  SDK, so the build above hasn't been run or verified here. Until
+  someone does that and re-runs `commit_latency`, treat "Vulkan will fix
+  the latency target" as the reasonable hypothesis it is, not a measured
+  result.
 
 Explicitly *not* a gap: §3's aside about benchmarking NVIDIA Parakeet-TDT
 is framed there as "a v2 investigation, not a v1 dependency" -- it was
@@ -212,7 +311,7 @@ required, just a longer first build.
 
 ```sh
 cargo build --workspace
-cargo test --workspace    # 83 tests, all pure-logic; hardware/model paths are compile-verified only
+cargo test --workspace    # 104 tests, all pure-logic; hardware/model paths are compile-verified only
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

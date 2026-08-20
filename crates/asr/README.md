@@ -39,6 +39,66 @@ monotonically better; `default_thread_count` now targets roughly the
 physical core count (`available_parallelism / 2`, clamped to `[1, 8]`)
 instead of either extreme.
 
+## Performance: small `audio_ctx` values fall off ggml's SIMD kernels
+
+Scoping `audio_ctx` to the clip length (above) introduced a second,
+subtler problem: short clips produce *small* `audio_ctx` values, and
+small values that aren't multiples of 16 are catastrophically slow.
+Measured on identical 0.25s audio, varying only this one parameter
+(`tests/small_audio_ctx_probe.rs`):
+
+| `audio_ctx` | time | | `audio_ctx` | time |
+|---|---|---|---|---|
+| 8 | 3.85s | | **16** | **327ms** |
+| 12 | 4.93s | | **24** | **432ms** |
+| 13 | 5.21s | | **32** | **578ms** |
+| 14 | 5.06s | | | |
+| 18 | 5.27s | | | |
+| 20 | 4.37s | | | |
+| 22 | 4.44s | | | |
+
+The fast values are exactly the multiples of 16; everything else costs
+roughly 10x on the same audio. A hard fast/slow split on block-size
+boundaries (rather than a smooth curve) is the signature of ggml
+dropping off its SIMD-blocked matmul kernels onto a scalar path —
+consistent with this build having to force the AVX2/FMA flags on
+explicitly in the first place (see the repo's `.cargo/config.toml`).
+
+`audio_ctx_for` now rounds up to a 16-frame block. This mattered most in
+the worst possible place: the trailing partial window at hotkey release
+is short by construction, so it was landing in the pathological range
+constantly. Fixing it cut a 0.25s tail from **4.3s to 302ms**.
+
+Worth noting how this was found, since the method generalizes: the first
+hypothesis was whisper.cpp's temperature-fallback retry ladder, which
+was *wrong* — sweeping `temperature_inc` (including 0.0, which disables
+the ladder entirely) reproduced the spike unchanged. Only then did
+holding the audio fixed and sweeping `audio_ctx` alone isolate the real
+cause.
+
+## Deliberate deviation from the architecture doc: temperature fallback
+
+`dictation-architecture.md` §2.3 lists "no temperature fallback" among
+its speed settings. This crate **does not follow that**, and the
+deviation is intentional — see `AsrConfig::temperature_inc`.
+
+Disabling the fallback entirely (`temperature_inc = 0.0`) is genuinely
+fastest, but it shipped real, user-visible garbage output: with nothing
+to catch a bad greedy decode, short context-free windows (which is every
+window here) would confidently emit nonsense. The fallback is the
+mechanism that re-decodes when whisper's own entropy/logprob checks flag
+a result as bad.
+
+The cost is worst-case latency, and it isn't small: each rung of the
+ladder is another full decode. `DEFAULT_TEMPERATURE_INC` is 0.4 rather
+than whisper.cpp's own 0.2 to bound the ladder to 3 rungs instead of 6.
+Even so, a tail decode on audio the model finds ambiguous can spike to
+~5s (see the root README's latency section). This is a real, unresolved
+tradeoff, not a solved problem — tuning `entropy_thold`/`logprob_thold`
+to make the fallback trigger less eagerly is the obvious next lever, but
+doing that honestly needs a corpus of real recorded speech to validate
+against, which this repo doesn't have yet.
+
 ## Fetching a model
 
 Model weights aren't checked into the repo (see the root `.gitignore`) --
@@ -70,7 +130,7 @@ whichever `.bin` you fetched (or set `DICTATION_MODEL_PATH`).
 
 ## Benchmarking
 
-Three `#[ignore]`d integration tests exist specifically so "is this slow?"
+Five `#[ignore]`d integration tests exist specifically so "is this slow?"
 never has to be answered by guessing again:
 
 ```sh
@@ -88,6 +148,21 @@ cargo test --release -p asr --test audio_ctx_experiment -- --ignored --nocapture
 # issues above. Use this one first if streaming feels behind real-time.
 ASR_BENCH_MODEL_A=models/ggml-distil-small.en.bin \
 cargo test --release -p asr --test real_time_factor -- --ignored --nocapture
+
+# End-of-speech -> text-at-cursor latency: the number the architecture
+# doc's "< 200 ms" target is actually about. Reports rather than
+# asserts; also sweeps temperature_inc so the retry ladder's cost is
+# visible. Use this one if dictation feels laggy *on release*
+# specifically (as opposed to falling behind while you talk).
+ASR_BENCH_MODEL_A=models/ggml-distil-small.en.bin \
+cargo test --release -p asr --test commit_latency -- --ignored --nocapture
+
+# Holds audio fixed and sweeps audio_ctx alone -- how the SIMD
+# block-alignment cliff above was isolated. Reach for this shape of
+# experiment when a result makes no sense (e.g. shorter input decoding
+# *slower*), to separate one variable from everything else.
+ASR_BENCH_MODEL_A=models/ggml-distil-small.en.bin \
+cargo test --release -p asr --test small_audio_ctx_probe -- --ignored --nocapture
 ```
 
 The synthetic swept-sine signal these use is a real caveat, not a

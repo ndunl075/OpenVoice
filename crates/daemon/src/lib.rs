@@ -53,6 +53,21 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// barely noticeable; large enough not to spin a thread pointlessly.
 const PTT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(150);
 
+/// How long after injecting text to keep ignoring keyboard events.
+///
+/// §2.5's injection path synthesizes Ctrl+V, and a global keyboard hook
+/// sees our synthetic keystrokes exactly like real ones. The paste's
+/// Ctrl press, landing while the user is still physically holding Shift,
+/// re-triggers the push-to-talk chord -> commits -> pastes again: a
+/// self-sustaining loop that typed one utterance ~10 times.
+///
+/// Suppressing only *during* the `inject()` call isn't enough, because
+/// the synthetic events arrive through the OS hook slightly after the
+/// call returns (and `inject` itself defers a clipboard restore). This
+/// covers that tail. It costs nothing the user perceives -- the text is
+/// already on screen before this window starts.
+const INJECTION_SETTLE_DELAY: Duration = Duration::from_millis(250);
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("couldn't load ASR model: {0}")]
@@ -236,6 +251,9 @@ pub struct Engine {
     /// bother cross-checking real key state at all. See
     /// [`PTT_WATCHDOG_INTERVAL`].
     ptt_active: Arc<AtomicBool>,
+    /// Set around text injection so the hotkey listener ignores our own
+    /// synthetic Ctrl+V. See [`INJECTION_SETTLE_DELAY`].
+    injecting: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -328,8 +346,23 @@ impl Engine {
 
         let (tx, rx) = mpsc::channel::<ControlEvent>();
         let hotkey_tx = tx.clone();
+        // See INJECTION_SETTLE_DELAY: while this is set, the hotkey
+        // listener drops everything it sees, because what it's seeing is
+        // us typing, not the user.
+        let injecting = Arc::new(AtomicBool::new(false));
+        let hotkey_injecting = injecting.clone();
         std::thread::spawn(move || {
             let result = hotkey::listen_multi(hotkey_config, move |slot, event| {
+                // Text injection synthesizes Ctrl+V, and rdev's global
+                // hook cannot tell our own synthetic keystrokes from real
+                // ones -- so without this guard the paste re-triggers the
+                // very chord that caused it (Ctrl goes down while the
+                // user is still holding Shift), which commits again,
+                // which pastes again. That feedback loop is what made a
+                // single utterance get typed ~10 times.
+                if hotkey_injecting.load(Ordering::Relaxed) {
+                    return;
+                }
                 let mapped = match (slot, event) {
                     (HotkeySlot::PushToTalk, HotkeyEvent::Pressed) => Some(ControlEvent::PushToTalkPressed),
                     (HotkeySlot::PushToTalk, HotkeyEvent::Released) => Some(ControlEvent::PushToTalkReleased),
@@ -386,6 +419,7 @@ impl Engine {
             rx,
             mic_name,
             ptt_active,
+            injecting,
         })
     }
 
@@ -564,7 +598,22 @@ impl Engine {
         // Settings-window toggle: skip reaching for the model at all
         // when it's off, same as if none had ever loaded.
         let cleanup = cleanup_runtime_enabled.then_some(self.cleanup.as_ref()).flatten();
+
+        // Deafen the hotkey listener across the whole injection, plus a
+        // settle window for the synthetic keystrokes to drain through the
+        // OS hook. See INJECTION_SETTLE_DELAY for the feedback loop this
+        // prevents.
+        self.injecting.store(true, Ordering::Relaxed);
         finish_utterance(&session.committed, cleanup, &mut self.injector, status_tx);
+        std::thread::sleep(INJECTION_SETTLE_DELAY);
+        self.injecting.store(false, Ordering::Relaxed);
+
+        // Anything queued *before* the flag went up (e.g. the tail of the
+        // user's own key release) would otherwise be processed now and
+        // could start a phantom session. The utterance is committed;
+        // nothing pending from before this point is still meaningful.
+        while self.rx.try_recv().is_ok() {}
+        self.ptt_active.store(false, Ordering::Relaxed);
     }
 }
 

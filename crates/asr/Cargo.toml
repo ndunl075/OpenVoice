@@ -4,6 +4,29 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# GPU backends for whisper.cpp (architecture doc §2.3). All off by
+# default and deliberately so: each needs a vendor toolchain/SDK present
+# at *build* time, which CI doesn't have and most contributors won't
+# either -- a default-on GPU feature would just turn `cargo build` into
+# a confusing native-build failure on every machine without it.
+#
+# This matters more than a normal nice-to-have: see the root README's
+# "Latency: the real numbers" -- CPU decode speed is what puts the doc's
+# < 200 ms target out of reach, so a GPU backend is the only remaining
+# lever that changes the constraint rather than shaving milliseconds off
+# the wrong side of it.
+#
+# vulkan: the cross-vendor option, and the relevant one on this machine
+#   (Intel Arc integrated GPU -- no CUDA, not Apple). Needs the Vulkan
+#   SDK at build time; the runtime loader alone isn't enough.
+# cuda:   NVIDIA only, needs the CUDA toolkit.
+# metal:  Apple Silicon only.
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
+
 [dependencies]
 ring-buffer = { version = "0.1.0", path = "../ring-buffer" }
 thiserror = "2.0.20"

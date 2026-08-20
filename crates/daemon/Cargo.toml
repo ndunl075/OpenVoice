@@ -8,6 +8,16 @@ license.workspace = true
 name = "dictation-daemon"
 path = "src/main.rs"
 
+[features]
+default = []
+# Pass-throughs so a GPU backend can be selected from the binary being
+# built (`cargo build -p daemon --features vulkan`) rather than only by
+# editing `asr`'s manifest. See crates/asr/Cargo.toml for what each one
+# needs at build time.
+vulkan = ["asr/vulkan"]
+cuda = ["asr/cuda"]
+metal = ["asr/metal"]
+
 [dependencies]
 asr = { version = "0.1.0", path = "../asr" }
 audio-input = { version = "0.1.0", path = "../audio-input" }

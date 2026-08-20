@@ -61,7 +61,7 @@ fn main() {
         .with_always_on_top()
         .with_taskbar(false)
         .with_resizable(false)
-        .with_inner_size([260.0, 56.0])
+        .with_inner_size([app::PILL_SIZE[0], app::PILL_SIZE[1]])
         .with_visible(false)
         .with_icon(app::window_icon());
 
@@ -73,7 +73,23 @@ fn main() {
     let result = eframe::run_native(
         APP_NAME,
         native_options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            // The pill draws its own rounded background (app.rs). egui's
+            // default panel fill and window stroke/shadow would render a
+            // second, larger rectangle *behind* it -- visible as an
+            // outline around the pill. Clear all three so the only thing
+            // on screen is the shape we paint ourselves.
+            // all_styles_mut, not style_mut_of(theme): the pill paints
+            // its own fixed cream/dark palette, so it must look the same
+            // whether the OS reports light or dark mode.
+            cc.egui_ctx.all_styles_mut(|style| {
+                style.visuals.panel_fill = eframe::egui::Color32::TRANSPARENT;
+                style.visuals.window_fill = eframe::egui::Color32::TRANSPARENT;
+                style.visuals.window_stroke = eframe::egui::Stroke::NONE;
+                style.visuals.window_shadow = eframe::egui::epaint::Shadow::NONE;
+                style.visuals.popup_shadow = eframe::egui::epaint::Shadow::NONE;
+            });
+
             Ok(Box::new(app::PillApp::new(
                 status_rx,
                 control_tx,

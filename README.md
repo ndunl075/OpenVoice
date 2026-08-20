@@ -8,10 +8,13 @@ this README tracks what's actually built.
 **On the "< 200 ms" target:** the architecture doc sets that as the goal,
 and this README used to claim it was met. It isn't, and nobody had
 measured it — see [Latency: the real numbers](#latency-the-real-numbers)
-below for what it actually does today (roughly **300 ms – 1.2 s** from
-key release to text, depending on how much speech lands in the trailing
-window). The privacy claim — no audio off the machine — *is* verifiable
-in the code and holds.
+below for what it actually does today (roughly **3.5 seconds** from key
+release to text on the hardware this was built on). That is *slower*
+than the cloud tools this was meant to beat — being honest about it is
+more useful than a number that flatters the design. What this project
+does deliver, verifiably, is everything in "Why use this anyway" below:
+no audio ever leaves the machine, it works with no network at all, and
+it captures the half-second *before* you press the key.
 
 (The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
 clone URLs still redirect. The local working-copy folder on disk here
@@ -94,6 +97,34 @@ cleanup model (§2.4) is **off by default and not even loaded** -- see
 `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`, or
 `DICTATION_CLEANUP_MODEL_PATH`); if it's enabled but missing, the daemon
 logs that and runs without it rather than refusing to start.
+
+## Why use this anyway
+
+It is currently **slower** than the cloud dictation tools it was modelled
+on, and its accuracy is that of `distil-small.en` — a small model — so it
+will mishear more than a cloud service running a large one. Those are the
+honest trade-offs. What it gives you in exchange is structural, not
+incremental:
+
+- **No audio ever leaves your machine.** Not "we don't store it" — there
+  is no network code in the audio path at all, and
+  [`crates/ring-buffer`](crates/ring-buffer) has no network dependency in
+  its `Cargo.toml` to make that checkable rather than promised.
+- **Works with no internet.** Not degraded-offline; there is nothing to
+  degrade. On a plane, on a locked-down network, on an air-gapped box, it
+  behaves identically.
+- **Nothing is buffered to disk.** The rolling ~30s audio buffer is
+  memory-only and continuously overwritten.
+- **Pre-roll: it hears the half-second *before* you press the key.** A
+  cloud tool structurally cannot do this — it isn't listening yet. If you
+  start talking a beat early, you don't lose your first word.
+- **No account, no subscription, no telemetry.** MIT licensed; fork it,
+  change the hotkey, swap the model.
+
+If you need the lowest possible latency and the best possible accuracy,
+today, a cloud tool will serve you better and this README isn't going to
+pretend otherwise. If you don't want a always-on microphone streaming to
+someone else's servers, that's the trade this exists to make.
 
 ## The cleanup pass is off by default
 
@@ -221,10 +252,24 @@ deadline):
 
 | Trailing tail at release | End-of-speech → cursor |
 |---|---|
-| 0.10 s | ~40 ms ✅ |
-| 0.25 s | ~317 ms |
-| 0.50 s | ~626 ms |
-| 1.00 s (worst case) | ~1.1 s |
+| 0.10 s | ~40 ms |
+| 0.25 s | ~3.4 s |
+| 0.50 s | ~3.7 s |
+| 1.00 s (worst case) | ~3.7 s |
+
+**These numbers got worse on purpose.** An earlier version of this table
+read ~300ms–1.2s. That was measured while `audio_ctx` was scoped tightly
+to clip length — which was fast, and produced *repetition loops* in real
+use (a two-second utterance coming out as the same phrase ~30 times).
+Fixing that required a much larger encoder context
+(`asr::audio_ctx`'s `MIN_CONTEXT_FRAMES`), and a larger context costs
+roughly linear time. Correct output at 3.7s beats garbage at 300ms, so
+this is the right trade — but it is a real, large regression and
+pretending otherwise would make the benchmark a lie.
+
+Note the shape: cost is now dominated by the fixed context floor, not by
+how much audio you actually spoke, which is why 0.25s and 1.0s tails
+cost nearly the same.
 
 **Why it can't currently hit 200 ms:** the tail is whatever audio
 arrived since the last full streaming window, so it's bounded by the

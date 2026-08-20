@@ -235,6 +235,33 @@ pub fn cleanup_model_path() -> PathBuf {
     PathBuf::from("models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
 }
 
+/// Whether to load the §2.4 cleanup model at all. **Off unless
+/// `DICTATION_ENABLE_CLEANUP` is set** to something other than `0`.
+///
+/// This deliberately departs from the architecture doc, which treats the
+/// cleanup pass as on-by-default-if-present. The reason is measurement,
+/// not preference: `crates/cleanup/tests/abandoned_work_cost.rs` shows a
+/// full generation takes **516-677ms against §2.4's hard 120ms
+/// deadline**, so on this hardware it *never once finishes in time*.
+/// Every utterance paid a burst of LLM inference to produce a result
+/// that was, by construction, always discarded.
+///
+/// Memory saved, measured rather than assumed: **~100MB** of working set
+/// (771MB -> 668MB with everything else identical). Notably *not* the
+/// 460MB the model file weighs -- llama.cpp mmaps it, so resident use is
+/// far below file size. The CPU/heat saving is the bigger prize and the
+/// reason this defaults off.
+///
+/// Enabling it is one env var, and worth doing on faster hardware or
+/// alongside a raised deadline -- §2.4's quality argument is sound, it's
+/// the 120ms budget this machine can't meet.
+pub fn cleanup_enabled_by_default() -> bool {
+    match std::env::var("DICTATION_ENABLE_CLEANUP") {
+        Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => false,
+    }
+}
+
 /// User dictionary path: `DICTATION_DICTIONARY_PATH`, then a plain-text
 /// `dictionary.txt` in the working directory. See README.md for the
 /// (one-term-per-line) format.
@@ -312,19 +339,36 @@ impl Engine {
         // §2.4: the cleanup pass is explicitly optional. Unlike ASR/VAD, a
         // missing model here doesn't stop the engine -- it just means
         // every utterance falls back to raw ASR text.
+        //
+        // Skipped entirely by default now -- see
+        // `cleanup_enabled_by_default`. Not loading is the point: the
+        // ~460MB of resident memory is most of what this process holds,
+        // and it was buying nothing, since the generation never once beat
+        // its 120ms deadline.
         let cleanup_model_path = cleanup_model_path();
-        let cleanup = match cleanup::CleanupModel::load(&cleanup_model_path) {
-            Ok(c) => {
-                print(&format!("Cleanup model: {}", cleanup_model_path.display()));
-                Some(c)
+        let cleanup = if cleanup_enabled_by_default() {
+            match cleanup::CleanupModel::load(&cleanup_model_path) {
+                Ok(c) => {
+                    print(&format!("Cleanup model: {}", cleanup_model_path.display()));
+                    Some(c)
+                }
+                Err(e) => {
+                    print(&format!(
+                        "Cleanup pass disabled (couldn't load {}): {e}",
+                        cleanup_model_path.display()
+                    ));
+                    None
+                }
             }
-            Err(e) => {
-                print(&format!(
-                    "Cleanup pass disabled (couldn't load {}): {e}",
-                    cleanup_model_path.display()
-                ));
-                None
-            }
+        } else {
+            print(
+                "Cleanup pass: OFF (default). It never finished inside \
+                 §2.4's 120ms deadline on this hardware -- measured \
+                 516-677ms -- so it burned CPU every utterance for a \
+                 result that was always discarded (~100MB saved too). \
+                 Set DICTATION_ENABLE_CLEANUP=1 to load it anyway.",
+            );
+            None
         };
 
         let injector = inject::TextInjector::new()?;

@@ -48,7 +48,7 @@ mkdir -p models
 curl -L -o models/ggml-distil-small.en.bin \
   https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
 curl -L -o models/silero_vad.onnx \
-  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+  https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
   https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 

@@ -96,7 +96,28 @@ impl TextInjector {
         paste_result
     }
 
+    /// Sends the paste chord, first clearing any modifier the user might
+    /// still be physically holding.
+    ///
+    /// This matters because of how push-to-talk ends: the hotkey is a
+    /// two-key chord (Ctrl+Shift by default) and an utterance commits when
+    /// *either* key comes up. Release Ctrl a moment before Shift -- which
+    /// is the normal way a hand leaves a chord -- and the paste fires while
+    /// Shift is still down, so the OS sees Ctrl+**Shift**+V instead of
+    /// Ctrl+V. Most apps don't paste on that, so the text silently never
+    /// appeared while every layer here still reported success: enigo sent
+    /// the keystrokes it was asked to, so `inject` returned `Ok`.
+    ///
+    /// Releasing them synthetically is safe from this app's perspective:
+    /// `daemon` suppresses its own hotkey listener across injection, so
+    /// these synthetic releases can't be mistaken for the user letting go.
     fn send_paste_chord(&mut self) -> Result<(), InjectError> {
+        for stray in [Key::Shift, Key::Alt, Key::Meta] {
+            // Best-effort: a platform that doesn't know one of these
+            // shouldn't abort the paste.
+            let _ = self.enigo.key(stray, Direction::Release);
+        }
+
         let modifier = paste_modifier();
         self.enigo.key(modifier, Direction::Press)?;
         let result = self.enigo.key(Key::V, Direction::Click);

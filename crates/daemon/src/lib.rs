@@ -68,6 +68,15 @@ const PTT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(150);
 /// already on screen before this window starts.
 const INJECTION_SETTLE_DELAY: Duration = Duration::from_millis(250);
 
+/// How long to wait for the push-to-talk chord to be *physically*
+/// released before pasting. See the wait's use in
+/// [`Engine::commit_utterance`]: pasting while the user still holds the
+/// chord's other key turns Ctrl+V into Ctrl+Shift+V, which most apps
+/// don't treat as paste. Short enough not to be felt (the decode that
+/// just finished took far longer), and bounded because nothing
+/// guarantees the user ever lets go.
+const CHORD_RELEASE_WAIT: Duration = Duration::from_millis(400);
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("couldn't load ASR model: {0}")]
@@ -154,6 +163,10 @@ struct Session {
     vad_fed_samples: usize,
     /// Whether the endpointer has confirmed speech started yet this session.
     heard_speech: bool,
+    /// Whether a VAD frame has already failed this session -- see
+    /// [`feed_vad`]'s error arm for why this is reported once rather
+    /// than per frame.
+    vad_failed: bool,
 }
 
 impl Session {
@@ -175,6 +188,7 @@ impl Session {
             committed: String::new(),
             vad_fed_samples: 0,
             heard_speech: false,
+            vad_failed: false,
         }
     }
 }
@@ -549,7 +563,7 @@ impl Engine {
                         continue;
                     };
                     let audio = session_audio(&self.ring, s);
-                    let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s);
+                    let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s, &status_tx);
                     if s.heard_speech {
                         if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
                             decode_window(&self.transcriber, &audio[start..end], &mut s.committed);
@@ -599,6 +613,21 @@ impl Engine {
         // when it's off, same as if none had ever loaded.
         let cleanup = cleanup_runtime_enabled.then_some(self.cleanup.as_ref()).flatten();
 
+        // Wait for the user's hand to actually leave the chord before
+        // pasting. An utterance commits when *either* chord key comes up,
+        // so the other one is often still held -- and a paste sent then
+        // reaches the OS as Ctrl+Shift+V rather than Ctrl+V, which most
+        // apps ignore (see `inject::send_paste_chord`). Bounded, because
+        // nothing guarantees the user ever lets go; `send_paste_chord`
+        // clears stray modifiers itself as the backstop if this times out.
+        let waited_from = std::time::Instant::now();
+        let (ptt_a, ptt_b) = self.hotkey_config.push_to_talk_keys;
+        while waited_from.elapsed() < CHORD_RELEASE_WAIT
+            && (hotkey::is_physically_down(ptt_a) || hotkey::is_physically_down(ptt_b))
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
         // Deafen the hotkey listener across the whole injection, plus a
         // settle window for the synthetic keystrokes to drain through the
         // OS hook. See INJECTION_SETTLE_DELAY for the feedback loop this
@@ -607,13 +636,16 @@ impl Engine {
         finish_utterance(&session.committed, cleanup, &mut self.injector, status_tx);
         std::thread::sleep(INJECTION_SETTLE_DELAY);
         self.injecting.store(false, Ordering::Relaxed);
-
-        // Anything queued *before* the flag went up (e.g. the tail of the
-        // user's own key release) would otherwise be processed now and
-        // could start a phantom session. The utterance is committed;
-        // nothing pending from before this point is still meaningful.
-        while self.rx.try_recv().is_ok() {}
         self.ptt_active.store(false, Ordering::Relaxed);
+
+        // NOTE: do *not* drain `rx` here. An earlier version did, to
+        // discard anything queued before the suppression flag went up --
+        // but the queue is also where a legitimate *next* press lands if
+        // the user starts talking again quickly, and draining threw those
+        // away, so the following dictation silently did nothing. The
+        // hotkey callback's `injecting` check already filters our own
+        // synthetic keystrokes precisely, at the source; a blanket drain
+        // here can only destroy real input.
     }
 }
 
@@ -627,6 +659,7 @@ fn feed_vad(
     endpointer: &mut vad::Endpointer,
     audio: &[f32],
     session: &mut Session,
+    status_tx: &mpsc::Sender<PipelineStatus>,
 ) -> Option<vad::EndpointEvent> {
     let mut last_event = None;
     while let Some((start, end)) = vad::next_frame_range(session.vad_fed_samples, audio.len()) {
@@ -642,7 +675,25 @@ fn feed_vad(
                     last_event = Some(event);
                 }
             }
-            Err(e) => eprintln!("warning: VAD frame failed: {e}"),
+            Err(e) => {
+                // Deliberately *not* just an eprintln any more. A
+                // model-contract mismatch makes this fail on every single
+                // frame, and when it did, the only signal was a stderr
+                // line the GUI build has no console to show -- so the
+                // whole VAD/streaming half of the pipeline sat dead for a
+                // long time while looking fine. Surfacing it on the
+                // status channel puts it in the UI where it can't be
+                // missed. Reported once per session (`vad_failed`), since
+                // a broken contract fails ~50x/second and would otherwise
+                // flood the channel.
+                eprintln!("warning: VAD frame failed: {e}");
+                if !session.vad_failed {
+                    session.vad_failed = true;
+                    let _ = status_tx.send(PipelineStatus::Warning(format!(
+                        "VAD not running ({e}) -- streaming disabled, see crates/vad/README.md"
+                    )));
+                }
+            }
         }
         session.vad_fed_samples = end;
     }

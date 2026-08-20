@@ -68,6 +68,15 @@ const PTT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(150);
 /// already on screen before this window starts.
 const INJECTION_SETTLE_DELAY: Duration = Duration::from_millis(250);
 
+/// How long to wait for the push-to-talk chord to be *physically*
+/// released before pasting. See the wait's use in
+/// [`Engine::commit_utterance`]: pasting while the user still holds the
+/// chord's other key turns Ctrl+V into Ctrl+Shift+V, which most apps
+/// don't treat as paste. Short enough not to be felt (the decode that
+/// just finished took far longer), and bounded because nothing
+/// guarantees the user ever lets go.
+const CHORD_RELEASE_WAIT: Duration = Duration::from_millis(400);
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("couldn't load ASR model: {0}")]
@@ -603,6 +612,21 @@ impl Engine {
         // Settings-window toggle: skip reaching for the model at all
         // when it's off, same as if none had ever loaded.
         let cleanup = cleanup_runtime_enabled.then_some(self.cleanup.as_ref()).flatten();
+
+        // Wait for the user's hand to actually leave the chord before
+        // pasting. An utterance commits when *either* chord key comes up,
+        // so the other one is often still held -- and a paste sent then
+        // reaches the OS as Ctrl+Shift+V rather than Ctrl+V, which most
+        // apps ignore (see `inject::send_paste_chord`). Bounded, because
+        // nothing guarantees the user ever lets go; `send_paste_chord`
+        // clears stray modifiers itself as the backstop if this times out.
+        let waited_from = std::time::Instant::now();
+        let (ptt_a, ptt_b) = self.hotkey_config.push_to_talk_keys;
+        while waited_from.elapsed() < CHORD_RELEASE_WAIT
+            && (hotkey::is_physically_down(ptt_a) || hotkey::is_physically_down(ptt_b))
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         // Deafen the hotkey listener across the whole injection, plus a
         // settle window for the synthetic keystrokes to drain through the

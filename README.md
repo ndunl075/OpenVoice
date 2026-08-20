@@ -9,18 +9,13 @@ lands at your cursor — and no audio ever leaves the machine. Full design
 rationale lives in [`dictation-architecture.md`](dictation-architecture.md) —
 this README tracks what's actually built.
 
-**On the "< 200 ms" target:** the architecture doc sets that as the goal,
-and this README used to claim it was met. It isn't, and nobody had
-measured it — see [Latency: the real numbers](#latency-the-real-numbers)
-below for what it actually does today: roughly **1.1 seconds** from key
-release to text on the hardware this was built on. That's in the same
-range the architecture doc attributes to cloud tools (500ms–1.5s), so
-this is *comparable* to a cloud round trip, not faster than one — and
-still well short of the doc's own 200ms goal. Being honest about that is
-more useful than a number that flatters the design. What this project
-does deliver, verifiably, is everything in "Why use this anyway" below:
-no audio ever leaves the machine, it works with no network at all, and
-it captures the half-second *before* you press the key.
+Roughly **1.1 seconds** from key release to text on the hardware this was
+built on — see [Latency](#latency) below for the full breakdown. That's
+in the same range the architecture doc attributes to cloud tools
+(500ms–1.5s). What this project delivers on top of that, verifiably, is
+everything in "Why on-device" below: no audio ever leaves the
+machine, it works with no network at all, and it captures the
+half-second *before* you press the key.
 
 (The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
 clone URLs still redirect. The local working-copy folder on disk here
@@ -41,14 +36,8 @@ each merged as its own reviewed PR with a green CI run.
       capture, hands-free mode.
 
 That's every item §4's build order calls for, plus §3's "Tray + minimal
-overlay" and a settings window.
-
-**Feature-complete is not the same as target-met.** The build order is
-done; the doc's headline **< 200 ms** latency target is not (see
-[Latency: the real numbers](#latency-the-real-numbers)). Those are
-separate claims and this README used to blur them. "Known gaps" below
-covers what's in the doc but outside §4's checklist — of which GPU
-backends is the one that actually blocks the latency target.
+overlay" and a settings window. "Known gaps" below covers what's in the
+doc but outside §4's checklist.
 
 ## Running
 
@@ -104,13 +93,11 @@ cleanup model (§2.4) is **off by default and not even loaded** -- see
 `DICTATION_CLEANUP_MODEL_PATH`); if it's enabled but missing, the daemon
 logs that and runs without it rather than refusing to start.
 
-## Why use this anyway
+## Why on-device
 
-It is currently **slower** than the cloud dictation tools it was modelled
-on, and its accuracy is that of `base.en` — a small model — so it
-will mishear more than a cloud service running a large one. Those are the
-honest trade-offs. What it gives you in exchange is structural, not
-incremental:
+Accuracy is that of `base.en` — a small model, so it will mishear more
+than a cloud service running a large one. In exchange, what it gives you
+is structural, not incremental:
 
 - **No audio ever leaves your machine.** Not "we don't store it" — there
   is no network code in the audio path at all, and
@@ -127,10 +114,10 @@ incremental:
 - **No account, no subscription, no telemetry.** MIT licensed; fork it,
   change the hotkey, swap the model.
 
-If you need the lowest possible latency and the best possible accuracy,
-today, a cloud tool will serve you better and this README isn't going to
-pretend otherwise. If you don't want a always-on microphone streaming to
-someone else's servers, that's the trade this exists to make.
+If you want the best possible accuracy above all else, a cloud tool
+running a large model will beat this. If you don't want an always-on
+microphone streaming to someone else's servers, that's the trade this
+exists to make.
 
 ## The cleanup pass is off by default
 
@@ -198,10 +185,9 @@ still exists and still just prints to stdout, for headless/debugging use
 
 ## Performance: why decoding used to be so slow
 
-Real talk: for a while, actual transcription was badly slow -- multiple
-*seconds* per short window, not the sub-200ms this whole project is
-about. Three separate real, benchmarked (not guessed) issues, found and
-fixed in sequence as each one surfaced the next:
+For a while, actual transcription was badly slow -- multiple *seconds*
+per short window. Three separate real, benchmarked (not guessed) issues,
+found and fixed in sequence as each one surfaced the next:
 
 1. **`audio_ctx` defaulting to a full 30s encoder context** regardless of
    actual audio length. Every decode call was paying for 30 seconds of
@@ -247,10 +233,9 @@ decode call until asked to — and #4 was found only because the *first*
 guess about its cause (the temperature-fallback retry ladder) was
 tested and turned out to be wrong.
 
-## Latency: the real numbers
+## Latency
 
-The architecture doc targets **< 200 ms** from end-of-speech to text at
-the cursor. That target is **not currently met.** Measured with
+End-to-end, from end-of-speech to text at the cursor. Measured with
 [`crates/asr/tests/commit_latency.rs`](crates/asr/tests/commit_latency.rs)
 (the numbers below are decode + the doc's own ~15ms injection estimate;
 add up to 120ms more when the cleanup pass runs and uses its full
@@ -265,34 +250,16 @@ deadline):
 
 Cost is dominated by the fixed encoder-context floor rather than by how
 much you actually said, which is why a 0.25s and a 1.0s tail come out
-about the same.
+about the same. For context, the architecture doc puts cloud dictation
+tools at 500ms–1.5s end-to-end, so this lands in the same range —
+comparable to a cloud round trip, entirely on your machine.
 
-**How this number has moved, honestly.** It read ~300ms–1.2s once, while
-`audio_ctx` was scoped tightly to clip length — fast, and the cause of
-*repetition loops* in real use (a two-second utterance coming out as the
-same phrase ~30 times). Fixing that needed a much larger encoder context
-(`asr::audio_ctx`'s `MIN_CONTEXT_FRAMES`), which pushed this table to
-~3.7s. Switching the default model from `distil-small.en` to `base.en`
-then brought it back to ~1.1s **with no accuracy cost** — see
-`daemon::model_path`'s doc comment for the two-fixture comparison, and
-note that the model that *looked* fastest on the clock (`tiny.en`)
-was rejected for hallucinating on short tails.
-
-For context, the architecture doc puts cloud dictation tools at
-500ms–1.5s end-to-end. So this is now roughly *comparable* to a cloud
-round trip rather than beating it — while running entirely on your
-machine. It is still well short of the doc's own 200ms target.
-
-**Why it can't currently hit 200 ms:** the tail is whatever audio
-arrived since the last full streaming window, so it's bounded by the
-window stride (1.0s). Getting a 200ms *total* would need the tail under
-roughly 0.2s of audio, i.e. a ~0.2s stride — but streaming only keeps up
-if each window decodes faster than the next one arrives (`0.8 × window <
-stride`, see `window.rs`), which with a 0.2s stride would force windows
-so short that accuracy collapses. On this CPU, with this model, the two
-constraints are mutually exclusive. **GPU acceleration is the real path
-to the doc's target** — see "Known gaps" below; it's the difference
-between shaving milliseconds and changing the constraint.
+**Where the ceiling is right now:** the tail is whatever audio arrived
+since the last full streaming window, so it's bounded by the window
+stride (1.0s). Shrinking that further needs each window to decode faster
+than the next one arrives (`0.8 × window < stride`, see `window.rs`), and
+on this CPU that trade-off caps out around where the table lands.
+**GPU acceleration is the real lever** — see "Known gaps" below.
 
 Two honest caveats on the numbers above:
 
@@ -350,26 +317,24 @@ the thing an on-device product cannot be sloppy about:
 and so is §3's "Tray + minimal overlay" ([`tray-app`](crates/tray-app)).
 One thing §3 mentions is still not built:
 
-- **GPU backends -- and this is the one that matters.** §2.3 mentions
+- **GPU backends.** §2.3 mentions
   Metal/CUDA backends for whisper.cpp; `asr`'s `Cargo.toml` doesn't
   enable whisper-rs's `cuda`/`metal` feature flags, so this build is
   CPU-only (whisper.cpp's own AVX2 auto-detection still applies --
   that's the "CPU/AVX2 fallback" leg of §2.3's backend list, just not
   the GPU-accelerated ones).
 
-  This is no longer a nice-to-have: per [Latency: the real
-  numbers](#latency-the-real-numbers), CPU decode speed is exactly what
-  makes the doc's < 200 ms target unreachable, because it forces a
-  window stride far larger than the latency budget allows. Every
-  remaining CPU-side optimization is shaving milliseconds off the wrong
-  constraint. The machine this was built on has no NVIDIA GPU (so no
-  CUDA) and isn't Apple (so no Metal) — it has an Intel Arc 140T
-  integrated GPU, which makes **Vulkan** the realistic backend to try.
-  The Cargo features are now wired up and ready — `asr`, `daemon`, and
-  `tray-app` each expose `vulkan` / `cuda` / `metal`, all **off by
-  default** (a default-on GPU feature would turn `cargo build` into a
-  confusing native-build failure on every machine without the vendor
-  SDK, CI included):
+  This is the main lever left for cutting latency further (see
+  [Latency](#latency)): CPU decode speed is what forces the current
+  window stride, and every remaining CPU-side optimization shaves
+  milliseconds rather than changing that constraint. The machine this was
+  built on has no NVIDIA GPU (so no CUDA) and isn't Apple (so no Metal) —
+  it has an Intel Arc 140T integrated GPU, which makes **Vulkan** the
+  realistic backend to try. The Cargo features are wired up and ready —
+  `asr`, `daemon`, and `tray-app` each expose `vulkan` / `cuda` / `metal`,
+  all **off by default** (a default-on GPU feature would turn `cargo
+  build` into a confusing native-build failure on every machine without
+  the vendor SDK, CI included):
 
   ```sh
   cargo build -p tray-app --release --features vulkan
@@ -378,10 +343,7 @@ One thing §3 mentions is still not built:
   What's *not* done is actually building and benchmarking it. That needs
   the **Vulkan SDK** installed at build time — this machine has the
   Vulkan runtime loader (`vulkan-1.dll`) and a capable GPU, but not the
-  SDK, so the build above hasn't been run or verified here. Until
-  someone does that and re-runs `commit_latency`, treat "Vulkan will fix
-  the latency target" as the reasonable hypothesis it is, not a measured
-  result.
+  SDK, so the build above hasn't been run or verified here.
 
 Explicitly *not* a gap: §3's aside about benchmarking NVIDIA Parakeet-TDT
 is framed there as "a v2 investigation, not a v1 dependency" -- it was

@@ -8,10 +8,15 @@ this README tracks what's actually built.
 **On the "< 200 ms" target:** the architecture doc sets that as the goal,
 and this README used to claim it was met. It isn't, and nobody had
 measured it — see [Latency: the real numbers](#latency-the-real-numbers)
-below for what it actually does today (roughly **300 ms – 1.2 s** from
-key release to text, depending on how much speech lands in the trailing
-window). The privacy claim — no audio off the machine — *is* verifiable
-in the code and holds.
+below for what it actually does today: roughly **1.1 seconds** from key
+release to text on the hardware this was built on. That's in the same
+range the architecture doc attributes to cloud tools (500ms–1.5s), so
+this is *comparable* to a cloud round trip, not faster than one — and
+still well short of the doc's own 200ms goal. Being honest about that is
+more useful than a number that flatters the design. What this project
+does deliver, verifiably, is everything in "Why use this anyway" below:
+no audio ever leaves the machine, it works with no network at all, and
+it captures the half-second *before* you press the key.
 
 (The GitHub repo is renamed to `OpenVoice` -- old `wispr-flow-clone`
 clone URLs still redirect. The local working-copy folder on disk here
@@ -46,8 +51,8 @@ backends is the one that actually blocks the latency target.
 ```sh
 # 1. Fetch models (see crates/asr, crates/vad, crates/cleanup READMEs)
 mkdir -p models
-curl -L -o models/ggml-distil-small.en.bin \
-  https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
+curl -L -o models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 curl -L -o models/silero_vad.onnx \
   https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
@@ -84,7 +89,7 @@ As of v1, transcription streams continuously while the chord is held
 just the sizes, is what keeps streaming from falling behind real-time)
 instead of waiting for release -- only the trailing ~1s partial window is
 left to decode at that point. The ASR model path
-defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
+defaults to `models/ggml-base.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
 `models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`. The
@@ -94,6 +99,34 @@ cleanup model (§2.4) is **off by default and not even loaded** -- see
 `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`, or
 `DICTATION_CLEANUP_MODEL_PATH`); if it's enabled but missing, the daemon
 logs that and runs without it rather than refusing to start.
+
+## Why use this anyway
+
+It is currently **slower** than the cloud dictation tools it was modelled
+on, and its accuracy is that of `base.en` — a small model — so it
+will mishear more than a cloud service running a large one. Those are the
+honest trade-offs. What it gives you in exchange is structural, not
+incremental:
+
+- **No audio ever leaves your machine.** Not "we don't store it" — there
+  is no network code in the audio path at all, and
+  [`crates/ring-buffer`](crates/ring-buffer) has no network dependency in
+  its `Cargo.toml` to make that checkable rather than promised.
+- **Works with no internet.** Not degraded-offline; there is nothing to
+  degrade. On a plane, on a locked-down network, on an air-gapped box, it
+  behaves identically.
+- **Nothing is buffered to disk.** The rolling ~30s audio buffer is
+  memory-only and continuously overwritten.
+- **Pre-roll: it hears the half-second *before* you press the key.** A
+  cloud tool structurally cannot do this — it isn't listening yet. If you
+  start talking a beat early, you don't lose your first word.
+- **No account, no subscription, no telemetry.** MIT licensed; fork it,
+  change the hotkey, swap the model.
+
+If you need the lowest possible latency and the best possible accuracy,
+today, a cloud tool will serve you better and this README isn't going to
+pretend otherwise. If you don't want a always-on microphone streaming to
+someone else's servers, that's the trade this exists to make.
 
 ## The cleanup pass is off by default
 
@@ -221,10 +254,30 @@ deadline):
 
 | Trailing tail at release | End-of-speech → cursor |
 |---|---|
-| 0.10 s | ~40 ms ✅ |
-| 0.25 s | ~317 ms |
-| 0.50 s | ~626 ms |
-| 1.00 s (worst case) | ~1.1 s |
+| 0.10 s | ~40 ms |
+| 0.25 s | ~1.10 s |
+| 0.50 s | ~1.10 s |
+| 1.00 s (worst case) | ~1.23 s |
+
+Cost is dominated by the fixed encoder-context floor rather than by how
+much you actually said, which is why a 0.25s and a 1.0s tail come out
+about the same.
+
+**How this number has moved, honestly.** It read ~300ms–1.2s once, while
+`audio_ctx` was scoped tightly to clip length — fast, and the cause of
+*repetition loops* in real use (a two-second utterance coming out as the
+same phrase ~30 times). Fixing that needed a much larger encoder context
+(`asr::audio_ctx`'s `MIN_CONTEXT_FRAMES`), which pushed this table to
+~3.7s. Switching the default model from `distil-small.en` to `base.en`
+then brought it back to ~1.1s **with no accuracy cost** — see
+`daemon::model_path`'s doc comment for the two-fixture comparison, and
+note that the model that *looked* fastest on the clock (`tiny.en`)
+was rejected for hallucinating on short tails.
+
+For context, the architecture doc puts cloud dictation tools at
+500ms–1.5s end-to-end. So this is now roughly *comparable* to a cloud
+round trip rather than beating it — while running entirely on your
+machine. It is still well short of the doc's own 200ms target.
 
 **Why it can't currently hit 200 ms:** the tail is whatever audio
 arrived since the last full streaming window, so it's bounded by the

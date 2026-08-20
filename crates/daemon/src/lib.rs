@@ -216,9 +216,31 @@ fn session_audio(ring: &ring_buffer::SharedRingBuffer, session: &Session) -> Vec
 /// ASR model path: first CLI arg, then `DICTATION_MODEL_PATH`, then the
 /// default fetched by `crates/asr/README.md`'s instructions.
 ///
-/// distil-small.en over small.en: measurably faster decode (fewer decoder
-/// layers) on top of the `audio_ctx` fix (see `crates/asr/src/audio_ctx.rs`),
-/// which is the change that actually mattered for real-time feel.
+/// **`base.en`**, chosen by measuring both speed *and* transcript against
+/// real speech (`crates/asr/tests/model_tradeoff.rs`) rather than
+/// wall-clock alone. On two fixtures, with production settings:
+///
+/// ```text
+///                     2.51s utterance   5.11s utterance   0.5s tail
+/// tiny.en                      326ms          1042ms*       3335ms*
+/// base.en                     1134ms           774ms         972ms
+/// distil-small.en             3831ms          3994ms        3629ms
+/// small.en-q5_1               5185ms               -             -
+///                                        * transcript was wrong
+/// ```
+///
+/// `base.en` is **3-5x faster than the `distil-small.en` this used to
+/// default to**, with an identical, correct transcript on both fixtures.
+/// The old choice was made on a synthetic-sine timing benchmark that
+/// never checked the text, which is the same mistake that let `audio_ctx`
+/// scoping ship repetition loops.
+///
+/// `tiny.en` is tempting on the headline number and was rejected on the
+/// second column: it hallucinated `"tatai"` from a 0.5s tail and invented
+/// a trailing `"The"` on the longer clip. A model that is fast and wrong
+/// isn't a speed win, it just moves the cost onto the user retyping --
+/// and short tails are exactly what `WindowPolicy::final_window` produces
+/// at every hotkey release.
 pub fn model_path() -> PathBuf {
     if let Some(arg) = std::env::args().nth(1) {
         return PathBuf::from(arg);
@@ -226,7 +248,7 @@ pub fn model_path() -> PathBuf {
     if let Ok(env_path) = std::env::var("DICTATION_MODEL_PATH") {
         return PathBuf::from(env_path);
     }
-    PathBuf::from("models/ggml-distil-small.en.bin")
+    PathBuf::from("models/ggml-base.en.bin")
 }
 
 /// VAD model path: `DICTATION_VAD_MODEL_PATH`, then the default fetched by
@@ -803,6 +825,23 @@ fn finish_utterance(
         return;
     }
 
+    // Rule-based pass first, unconditionally: it's pure string work, so
+    // there's no deadline to race and no reason to make it optional. It
+    // catches the boring disfluencies (fillers, "the the", "I-I-I")
+    // that don't need any understanding -- which is most of what shows
+    // up in practice, and all of what the LLM pass was doing for the
+    // common case before it was turned off for missing its budget.
+    let committed = cleanup::strip_disfluencies(committed);
+    let committed = committed.as_str();
+    if committed.trim().is_empty() {
+        // The whole utterance was filler ("um uh").
+        println!("(heard nothing but filler)");
+        let _ = status_tx.send(PipelineStatus::HeardNothing);
+        return;
+    }
+
+    // The LLM pass, if enabled, then works on already-tidied text and is
+    // left to do the part rules can't: real rewording and grammar.
     let cleaned = cleanup.and_then(|c| c.clean(committed));
     let final_text = match &cleaned {
         Some(text) if !text.trim().is_empty() => {

@@ -19,9 +19,11 @@
 //! in this repo; see `crates/cleanup/README.md`.
 
 mod deadline;
+mod disfluency;
 mod prompt;
 
 pub use deadline::{run_with_deadline, CancelToken};
+pub use disfluency::strip_disfluencies;
 pub use prompt::build_prompt;
 
 use std::num::NonZeroU32;

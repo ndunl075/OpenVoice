@@ -8,6 +8,16 @@ license.workspace = true
 name = "dictation-tray"
 path = "src/main.rs"
 
+[features]
+default = []
+# Pass-throughs to `asr`'s GPU backends via `daemon` -- this is the
+# binary most people actually run, so `cargo build -p tray-app --release
+# --features vulkan` should work without editing any manifest. See
+# crates/asr/Cargo.toml for build-time requirements.
+vulkan = ["daemon/vulkan"]
+cuda = ["daemon/cuda"]
+metal = ["daemon/metal"]
+
 [dependencies]
 daemon = { version = "0.1.0", path = "../daemon" }
 hotkey = { version = "0.1.0", path = "../hotkey" }

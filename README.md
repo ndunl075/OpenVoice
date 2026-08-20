@@ -278,9 +278,23 @@ One thing §3 mentions is still not built:
   constraint. The machine this was built on has no NVIDIA GPU (so no
   CUDA) and isn't Apple (so no Metal) — it has an Intel Arc 140T
   integrated GPU, which makes **Vulkan** the realistic backend to try.
-  That's a real chunk of work (new native dependency, driver-dependent,
-  needs its own benchmarking pass) and was explicitly deferred rather
-  than started.
+  The Cargo features are now wired up and ready — `asr`, `daemon`, and
+  `tray-app` each expose `vulkan` / `cuda` / `metal`, all **off by
+  default** (a default-on GPU feature would turn `cargo build` into a
+  confusing native-build failure on every machine without the vendor
+  SDK, CI included):
+
+  ```sh
+  cargo build -p tray-app --release --features vulkan
+  ```
+
+  What's *not* done is actually building and benchmarking it. That needs
+  the **Vulkan SDK** installed at build time — this machine has the
+  Vulkan runtime loader (`vulkan-1.dll`) and a capable GPU, but not the
+  SDK, so the build above hasn't been run or verified here. Until
+  someone does that and re-runs `commit_latency`, treat "Vulkan will fix
+  the latency target" as the reasonable hypothesis it is, not a measured
+  result.
 
 Explicitly *not* a gap: §3's aside about benchmarking NVIDIA Parakeet-TDT
 is framed there as "a v2 investigation, not a v1 dependency" -- it was

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="OpenVoice logo" width="220">
+</p>
+
 # OpenVoice
 
 On-device voice dictation: you hold a hotkey, talk, let go, and the text

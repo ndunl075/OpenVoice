@@ -803,6 +803,23 @@ fn finish_utterance(
         return;
     }
 
+    // Rule-based pass first, unconditionally: it's pure string work, so
+    // there's no deadline to race and no reason to make it optional. It
+    // catches the boring disfluencies (fillers, "the the", "I-I-I")
+    // that don't need any understanding -- which is most of what shows
+    // up in practice, and all of what the LLM pass was doing for the
+    // common case before it was turned off for missing its budget.
+    let committed = cleanup::strip_disfluencies(committed);
+    let committed = committed.as_str();
+    if committed.trim().is_empty() {
+        // The whole utterance was filler ("um uh").
+        println!("(heard nothing but filler)");
+        let _ = status_tx.send(PipelineStatus::HeardNothing);
+        return;
+    }
+
+    // The LLM pass, if enabled, then works on already-tidied text and is
+    // left to do the part rules can't: real rewording and grammar.
     let cleaned = cleanup.and_then(|c| c.clean(committed));
     let final_text = match &cleaned {
         Some(text) if !text.trim().is_empty() => {

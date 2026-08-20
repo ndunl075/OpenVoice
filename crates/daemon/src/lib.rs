@@ -154,6 +154,10 @@ struct Session {
     vad_fed_samples: usize,
     /// Whether the endpointer has confirmed speech started yet this session.
     heard_speech: bool,
+    /// Whether a VAD frame has already failed this session -- see
+    /// [`feed_vad`]'s error arm for why this is reported once rather
+    /// than per frame.
+    vad_failed: bool,
 }
 
 impl Session {
@@ -175,6 +179,7 @@ impl Session {
             committed: String::new(),
             vad_fed_samples: 0,
             heard_speech: false,
+            vad_failed: false,
         }
     }
 }
@@ -549,7 +554,7 @@ impl Engine {
                         continue;
                     };
                     let audio = session_audio(&self.ring, s);
-                    let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s);
+                    let vad_event = feed_vad(&mut self.vad, &mut endpointer, &audio, s, &status_tx);
                     if s.heard_speech {
                         if let Some((start, end)) = window_policy.next_window(audio.len(), s.windows_decoded) {
                             decode_window(&self.transcriber, &audio[start..end], &mut s.committed);
@@ -627,6 +632,7 @@ fn feed_vad(
     endpointer: &mut vad::Endpointer,
     audio: &[f32],
     session: &mut Session,
+    status_tx: &mpsc::Sender<PipelineStatus>,
 ) -> Option<vad::EndpointEvent> {
     let mut last_event = None;
     while let Some((start, end)) = vad::next_frame_range(session.vad_fed_samples, audio.len()) {
@@ -642,7 +648,25 @@ fn feed_vad(
                     last_event = Some(event);
                 }
             }
-            Err(e) => eprintln!("warning: VAD frame failed: {e}"),
+            Err(e) => {
+                // Deliberately *not* just an eprintln any more. A
+                // model-contract mismatch makes this fail on every single
+                // frame, and when it did, the only signal was a stderr
+                // line the GUI build has no console to show -- so the
+                // whole VAD/streaming half of the pipeline sat dead for a
+                // long time while looking fine. Surfacing it on the
+                // status channel puts it in the UI where it can't be
+                // missed. Reported once per session (`vad_failed`), since
+                // a broken contract fails ~50x/second and would otherwise
+                // flood the channel.
+                eprintln!("warning: VAD frame failed: {e}");
+                if !session.vad_failed {
+                    session.vad_failed = true;
+                    let _ = status_tx.send(PipelineStatus::Warning(format!(
+                        "VAD not running ({e}) -- streaming disabled, see crates/vad/README.md"
+                    )));
+                }
+            }
         }
         session.vad_fed_samples = end;
     }

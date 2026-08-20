@@ -8,9 +8,11 @@ this README tracks what's actually built.
 **On the "< 200 ms" target:** the architecture doc sets that as the goal,
 and this README used to claim it was met. It isn't, and nobody had
 measured it — see [Latency: the real numbers](#latency-the-real-numbers)
-below for what it actually does today (roughly **3.5 seconds** from key
-release to text on the hardware this was built on). That is *slower*
-than the cloud tools this was meant to beat — being honest about it is
+below for what it actually does today: roughly **1.1 seconds** from key
+release to text on the hardware this was built on. That's in the same
+range the architecture doc attributes to cloud tools (500ms–1.5s), so
+this is *comparable* to a cloud round trip, not faster than one — and
+still well short of the doc's own 200ms goal. Being honest about that is
 more useful than a number that flatters the design. What this project
 does deliver, verifiably, is everything in "Why use this anyway" below:
 no audio ever leaves the machine, it works with no network at all, and
@@ -49,8 +51,8 @@ backends is the one that actually blocks the latency target.
 ```sh
 # 1. Fetch models (see crates/asr, crates/vad, crates/cleanup READMEs)
 mkdir -p models
-curl -L -o models/ggml-distil-small.en.bin \
-  https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
+curl -L -o models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 curl -L -o models/silero_vad.onnx \
   https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
@@ -87,7 +89,7 @@ As of v1, transcription streams continuously while the chord is held
 just the sizes, is what keeps streaming from falling behind real-time)
 instead of waiting for release -- only the trailing ~1s partial window is
 left to decode at that point. The ASR model path
-defaults to `models/ggml-distil-small.en.bin`; override it with a CLI arg
+defaults to `models/ggml-base.en.bin`; override it with a CLI arg
 (`cargo run -p daemon --release -- path/to/model.bin`) or the
 `DICTATION_MODEL_PATH` env var. The VAD model path defaults to
 `models/silero_vad.onnx`; override with `DICTATION_VAD_MODEL_PATH`. The
@@ -101,7 +103,7 @@ logs that and runs without it rather than refusing to start.
 ## Why use this anyway
 
 It is currently **slower** than the cloud dictation tools it was modelled
-on, and its accuracy is that of `distil-small.en` — a small model — so it
+on, and its accuracy is that of `base.en` — a small model — so it
 will mishear more than a cloud service running a large one. Those are the
 honest trade-offs. What it gives you in exchange is structural, not
 incremental:
@@ -253,23 +255,29 @@ deadline):
 | Trailing tail at release | End-of-speech → cursor |
 |---|---|
 | 0.10 s | ~40 ms |
-| 0.25 s | ~3.4 s |
-| 0.50 s | ~3.7 s |
-| 1.00 s (worst case) | ~3.7 s |
+| 0.25 s | ~1.10 s |
+| 0.50 s | ~1.10 s |
+| 1.00 s (worst case) | ~1.23 s |
 
-**These numbers got worse on purpose.** An earlier version of this table
-read ~300ms–1.2s. That was measured while `audio_ctx` was scoped tightly
-to clip length — which was fast, and produced *repetition loops* in real
-use (a two-second utterance coming out as the same phrase ~30 times).
-Fixing that required a much larger encoder context
-(`asr::audio_ctx`'s `MIN_CONTEXT_FRAMES`), and a larger context costs
-roughly linear time. Correct output at 3.7s beats garbage at 300ms, so
-this is the right trade — but it is a real, large regression and
-pretending otherwise would make the benchmark a lie.
+Cost is dominated by the fixed encoder-context floor rather than by how
+much you actually said, which is why a 0.25s and a 1.0s tail come out
+about the same.
 
-Note the shape: cost is now dominated by the fixed context floor, not by
-how much audio you actually spoke, which is why 0.25s and 1.0s tails
-cost nearly the same.
+**How this number has moved, honestly.** It read ~300ms–1.2s once, while
+`audio_ctx` was scoped tightly to clip length — fast, and the cause of
+*repetition loops* in real use (a two-second utterance coming out as the
+same phrase ~30 times). Fixing that needed a much larger encoder context
+(`asr::audio_ctx`'s `MIN_CONTEXT_FRAMES`), which pushed this table to
+~3.7s. Switching the default model from `distil-small.en` to `base.en`
+then brought it back to ~1.1s **with no accuracy cost** — see
+`daemon::model_path`'s doc comment for the two-fixture comparison, and
+note that the model that *looked* fastest on the clock (`tiny.en`)
+was rejected for hallucinating on short tails.
+
+For context, the architecture doc puts cloud dictation tools at
+500ms–1.5s end-to-end. So this is now roughly *comparable* to a cloud
+round trip rather than beating it — while running entirely on your
+machine. It is still well short of the doc's own 200ms target.
 
 **Why it can't currently hit 200 ms:** the tail is whatever audio
 arrived since the last full streaming window, so it's bounded by the
